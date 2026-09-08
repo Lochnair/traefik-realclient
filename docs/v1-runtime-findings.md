@@ -21,11 +21,12 @@ integrations. No contradiction with `docs/design.md` or
   disposable container; other plugins are loaded as local plugins from tagged
   source.
 
-## Results (54 checks, all passing)
+## Results (62 checks across 7 suites, all passing)
 
 | Area | Verified |
 |---|---|
 | Yaegi load | The real package — `reflect`-based decoded-config validation, preset overlay, `atomic.Value` snapshots, the feed-worker registry and its background goroutine, `crypto/sha256` cache ids — interprets and runs under Yaegi 0.16.1 with no shims. |
+| Feed subsystem | The interpreted worker fetches a real HTTPS feed, parses/validates it, publishes the snapshot, and writes + reloads the schema-versioned disk cache. A 304 keeps the set; a valid update is adopted; an invalid 200 and a 503 both retain last-known-good; a restart with the origin down serves from the persisted cache. Matches §6. (Traefik's release build sets `DefaultGODEBUG=x509sslcertoverrideplatform=0`, so the macOS test overrides it to let `SSL_CERT_FILE` trust the local feed CA — the plugin itself does normal certificate validation.) |
 | Secure vs insecure | Secure entrypoint strips a forged `X-Real-Ip` and the plugin then resolves the peer; insecure entrypoint preserves the supplied value for extraction. Matches §2.2. |
 | Placement | Entrypoint-default middleware runs after root routing (root `ClientIP` sees the peer, a `198.51.100.2` root rule 404s) and before the child muxer (child `ClientIP` sees the rewrite); child-default 404 still runs the plugin; entrypoint-unmatched 404 and encoded-slash denial precede it. Matches §2.1. |
 | Backend-observed identity | Backend sees exactly one canonical `X-Real-Ip` = effective; `Forwarded`, `Cf-Connecting-Ip`, `True-Client-Ip`, `X-Client-Ip` and underscore aliases removed; provider metadata (`Cf-Ipcountry`, `Cdn-Pullzoneid`) preserved; `Cf-Visitor` removed. |
@@ -54,6 +55,10 @@ integrations. No contradiction with `docs/design.md` or
   from real `req.TLS` state, so clearing the inbound assertions is safe.
 - Badger v1.7.0's `go 1.25` go.mod directive does not block loading in Traefik
   3.7.12 (the code uses no post-1.22 language/stdlib features that Yaegi rejects).
+- The interpreted feed worker's full path — background goroutine, bounded HTTPS
+  fetch, `If-None-Match`/ETag handling, `atomic.Value` publication, temp-file +
+  rename disk cache, and cache reload on start — runs under Yaegi 0.16.1, not
+  just the narrower `atomic`/goroutine primitives V0 probed.
 
 ## Assumptions contradicted
 
