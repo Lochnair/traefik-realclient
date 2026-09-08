@@ -15,6 +15,7 @@ import time
 SUITES = [
     ("core", set()),
     ("streaming", set()),
+    ("feeds", set()),
     ("certs", {"network"}),
     ("crowdsec", {"docker", "network"}),
     ("appsec", {"docker", "network"}),

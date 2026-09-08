@@ -157,14 +157,16 @@ def _url_ready(ready_url):
 
 
 @contextlib.contextmanager
-def traefik(binary, root: pathlib.Path, static: dict, logdir: pathlib.Path, ready):
+def traefik(binary, root: pathlib.Path, static: dict, logdir: pathlib.Path, ready, env=None):
     """`ready` is a URL string (polled for HTTP 200) or a zero-arg callable -> bool."""
+    import os
     check = ready if callable(ready) else (lambda: _url_ready(ready))
     (root / "static.yml").write_text(json.dumps(static))
     logdir.mkdir(parents=True, exist_ok=True)
     with (logdir / "traefik.log").open("w") as log:
         proc = subprocess.Popen([binary, "--configFile=" + str(root / "static.yml")],
-                                cwd=root, stdout=log, stderr=subprocess.STDOUT)
+                                cwd=root, stdout=log, stderr=subprocess.STDOUT,
+                                env={**os.environ, **(env or {})})
         try:
             deadline = time.monotonic() + 30
             while True:
