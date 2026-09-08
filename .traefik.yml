@@ -1,0 +1,7 @@
+displayName: Realclient
+type: middleware
+basePkg: realclient
+import: github.com/Lochnair/traefik-realclient
+summary: Resolve and normalize client identity behind explicitly trusted upstreams.
+testData:
+  feedCacheDir: ""
