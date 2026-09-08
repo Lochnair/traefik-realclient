@@ -1,0 +1,149 @@
+{
+  "entryPoints": {
+    "secure": {
+      "address": "127.0.0.1:64495",
+      "forwardedHeaders": {
+        "insecure": false
+      },
+      "http": {
+        "middlewares": [
+          "secure@file"
+        ],
+        "aliasHeadersStrategy": "delete"
+      }
+    },
+    "insecure": {
+      "address": "127.0.0.1:64496",
+      "forwardedHeaders": {
+        "insecure": true
+      },
+      "http": {
+        "middlewares": [
+          "insecure@file"
+        ],
+        "aliasHeadersStrategy": "delete",
+        "encodedCharacters": {
+          "allowEncodedSlash": false
+        }
+      }
+    },
+    "allowed": {
+      "address": "127.0.0.1:64497",
+      "forwardedHeaders": {
+        "insecure": true,
+        "connection": [
+          "X-Custom-Ip",
+          "X-Zone"
+        ]
+      },
+      "http": {
+        "middlewares": [
+          "allowed@file"
+        ],
+        "aliasHeadersStrategy": "delete"
+      }
+    },
+    "reverse": {
+      "address": "127.0.0.1:64498",
+      "forwardedHeaders": {
+        "insecure": true
+      },
+      "http": {
+        "middlewares": [
+          "reverse@file"
+        ],
+        "aliasHeadersStrategy": "delete"
+      }
+    },
+    "selector": {
+      "address": "127.0.0.1:64499",
+      "forwardedHeaders": {
+        "insecure": true
+      },
+      "http": {
+        "middlewares": [
+          "selector@file"
+        ],
+        "aliasHeadersStrategy": "delete"
+      }
+    },
+    "selectorallowed": {
+      "address": "127.0.0.1:64500",
+      "forwardedHeaders": {
+        "insecure": true,
+        "connection": [
+          "X-Custom-Ip",
+          "X-Zone"
+        ]
+      },
+      "http": {
+        "middlewares": [
+          "selectorallowed@file"
+        ],
+        "aliasHeadersStrategy": "delete"
+      }
+    },
+    "proxy": {
+      "address": "127.0.0.1:64501",
+      "forwardedHeaders": {
+        "insecure": true
+      },
+      "http": {
+        "middlewares": [
+          "proxy@file"
+        ],
+        "aliasHeadersStrategy": "delete"
+      },
+      "proxyProtocol": {
+        "trustedIPs": [
+          "127.0.0.1/32"
+        ]
+      }
+    },
+    "tls": {
+      "address": "127.0.0.1:64502",
+      "forwardedHeaders": {
+        "insecure": true
+      },
+      "http": {
+        "middlewares": [
+          "tls@file"
+        ],
+        "aliasHeadersStrategy": "delete"
+      }
+    }
+  },
+  "providers": {
+    "file": {
+      "filename": "/var/folders/03/r3bpgcsn3n55nzv5xv8330g00000gn/T/realclient-runtime-w4fkbggp/dynamic.yml"
+    }
+  },
+  "experimental": {
+    "localPlugins": {
+      "probe": {
+        "moduleName": "example.com/realclientv0"
+      }
+    }
+  },
+  "log": {
+    "level": "DEBUG"
+  },
+  "global": {
+    "checkNewVersion": false,
+    "sendAnonymousUsage": false
+  },
+  "ping": {
+    "entryPoint": "insecure"
+  },
+  "accessLog": {
+    "addInternals": true,
+    "format": "json",
+    "filePath": "/private/tmp/realclient-v0-runtime-complete/access.jsonl",
+    "bufferingSize": 10,
+    "fields": {
+      "headers": {
+        "defaultMode": "keep"
+      }
+    }
+  }
+}

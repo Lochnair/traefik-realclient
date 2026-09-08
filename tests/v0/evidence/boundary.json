@@ -1,0 +1,50 @@
+[
+  {
+    "case": "nested",
+    "passed": false,
+    "expected": {
+      "sources": [
+        {
+          "name": "probe",
+          "trust": {
+            "static": [],
+            "feeds": [
+              {
+                "url": "https://example.invalid/feed",
+                "minEntries": "1",
+                "refreshInterval": "1s"
+              }
+            ]
+          },
+          "extract": {
+            "header": "X-Real-Ip",
+            "mode": "single"
+          },
+          "scheme": {}
+        }
+      ]
+    },
+    "actual": {
+      "sources": [
+        {
+          "extract": {
+            "header": "X-Real-Ip",
+            "mode": "single"
+          },
+          "name": "probe",
+          "scheme": "",
+          "trust": {
+            "feeds": [
+              {
+                "minEntries": "1",
+                "refreshInterval": "1s",
+                "url": "https://example.invalid/feed"
+              }
+            ],
+            "static": ""
+          }
+        }
+      ]
+    }
+  }
+]

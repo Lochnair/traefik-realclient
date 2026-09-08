@@ -1,0 +1,744 @@
+[
+  {
+    "case": "baseline",
+    "supplied": {
+      "sources": [
+        {
+          "name": "probe"
+        }
+      ]
+    },
+    "http_status": 200,
+    "new_receives": {
+      "sources": [
+        {
+          "name": "probe",
+          "preset": null,
+          "trust": null,
+          "extract": null,
+          "scheme": null,
+          "unknown": null
+        }
+      ],
+      "feedCacheDir": null,
+      "unknown": null
+    },
+    "response_body": null
+  },
+  {
+    "case": "trust-empty",
+    "supplied": {
+      "sources": [
+        {
+          "name": "probe",
+          "trust": {}
+        }
+      ]
+    },
+    "http_status": 404,
+    "new_receives": null,
+    "response_body": "404 page not found\n"
+  },
+  {
+    "case": "static-omitted",
+    "supplied": {
+      "sources": [
+        {
+          "name": "probe",
+          "trust": {
+            "feeds": [
+              {
+                "url": "https://example.invalid/feed"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "http_status": 200,
+    "new_receives": {
+      "sources": [
+        {
+          "name": "probe",
+          "preset": null,
+          "trust": {
+            "static": null,
+            "feeds": [
+              {
+                "url": "https://example.invalid/feed",
+                "format": null,
+                "refreshInterval": null,
+                "minEntries": null,
+                "unknown": null
+              }
+            ],
+            "headerIn": null,
+            "hostExact": null,
+            "hostSuffixes": null,
+            "unknown": null
+          },
+          "extract": null,
+          "scheme": null,
+          "unknown": null
+        }
+      ],
+      "feedCacheDir": null,
+      "unknown": null
+    },
+    "response_body": null
+  },
+  {
+    "case": "static-empty",
+    "supplied": {
+      "sources": [
+        {
+          "name": "probe",
+          "trust": {
+            "static": []
+          }
+        }
+      ]
+    },
+    "http_status": 200,
+    "new_receives": {
+      "sources": [
+        {
+          "name": "probe",
+          "preset": null,
+          "trust": {
+            "static": [],
+            "feeds": null,
+            "headerIn": null,
+            "hostExact": null,
+            "hostSuffixes": null,
+            "unknown": null
+          },
+          "extract": null,
+          "scheme": null,
+          "unknown": null
+        }
+      ],
+      "feedCacheDir": null,
+      "unknown": null
+    },
+    "response_body": null
+  },
+  {
+    "case": "static-string",
+    "supplied": {
+      "sources": [
+        {
+          "name": "probe",
+          "trust": {
+            "static": ""
+          }
+        }
+      ]
+    },
+    "http_status": 200,
+    "new_receives": {
+      "sources": [
+        {
+          "name": "probe",
+          "preset": null,
+          "trust": {
+            "static": [],
+            "feeds": null,
+            "headerIn": null,
+            "hostExact": null,
+            "hostSuffixes": null,
+            "unknown": null
+          },
+          "extract": null,
+          "scheme": null,
+          "unknown": null
+        }
+      ],
+      "feedCacheDir": null,
+      "unknown": null
+    },
+    "response_body": null
+  },
+  {
+    "case": "static-null",
+    "supplied": {
+      "sources": [
+        {
+          "name": "probe",
+          "trust": {
+            "static": null
+          }
+        }
+      ]
+    },
+    "http_status": 404,
+    "new_receives": null,
+    "response_body": "404 page not found\n"
+  },
+  {
+    "case": "static-valid",
+    "supplied": {
+      "sources": [
+        {
+          "name": "probe",
+          "trust": {
+            "static": [
+              "192.0.2.0/24"
+            ]
+          }
+        }
+      ]
+    },
+    "http_status": 200,
+    "new_receives": {
+      "sources": [
+        {
+          "name": "probe",
+          "preset": null,
+          "trust": {
+            "static": [
+              "192.0.2.0/24"
+            ],
+            "feeds": null,
+            "headerIn": null,
+            "hostExact": null,
+            "hostSuffixes": null,
+            "unknown": null
+          },
+          "extract": null,
+          "scheme": null,
+          "unknown": null
+        }
+      ],
+      "feedCacheDir": null,
+      "unknown": null
+    },
+    "response_body": null
+  },
+  {
+    "case": "feeds-empty",
+    "supplied": {
+      "sources": [
+        {
+          "name": "probe",
+          "trust": {
+            "feeds": []
+          }
+        }
+      ]
+    },
+    "http_status": 200,
+    "new_receives": {
+      "sources": [
+        {
+          "name": "probe",
+          "preset": null,
+          "trust": {
+            "static": null,
+            "feeds": [],
+            "headerIn": null,
+            "hostExact": null,
+            "hostSuffixes": null,
+            "unknown": null
+          },
+          "extract": null,
+          "scheme": null,
+          "unknown": null
+        }
+      ],
+      "feedCacheDir": null,
+      "unknown": null
+    },
+    "response_body": null
+  },
+  {
+    "case": "sources-empty",
+    "supplied": {
+      "sources": []
+    },
+    "http_status": 200,
+    "new_receives": {
+      "sources": [],
+      "feedCacheDir": null,
+      "unknown": null
+    },
+    "response_body": null
+  },
+  {
+    "case": "sources-omitted",
+    "supplied": {
+      "feedCacheDir": "/unused"
+    },
+    "http_status": 200,
+    "new_receives": {
+      "sources": null,
+      "feedCacheDir": "/unused",
+      "unknown": null
+    },
+    "response_body": null
+  },
+  {
+    "case": "scheme-empty",
+    "supplied": {
+      "sources": [
+        {
+          "name": "probe",
+          "scheme": {}
+        }
+      ]
+    },
+    "http_status": 404,
+    "new_receives": null,
+    "response_body": "404 page not found\n"
+  },
+  {
+    "case": "scheme-null",
+    "supplied": {
+      "sources": [
+        {
+          "name": "probe",
+          "scheme": null
+        }
+      ]
+    },
+    "http_status": 200,
+    "new_receives": {
+      "sources": [
+        {
+          "name": "probe",
+          "preset": null,
+          "trust": null,
+          "extract": null,
+          "scheme": null,
+          "unknown": null
+        }
+      ],
+      "feedCacheDir": null,
+      "unknown": null
+    },
+    "response_body": null
+  },
+  {
+    "case": "scheme-string",
+    "supplied": {
+      "sources": [
+        {
+          "name": "probe",
+          "scheme": ""
+        }
+      ]
+    },
+    "http_status": 404,
+    "new_receives": null,
+    "response_body": "404 page not found\n"
+  },
+  {
+    "case": "scheme-valid",
+    "supplied": {
+      "sources": [
+        {
+          "name": "probe",
+          "scheme": {
+            "header": "X-Forwarded-Proto",
+            "mode": "single"
+          }
+        }
+      ]
+    },
+    "http_status": 200,
+    "new_receives": {
+      "sources": [
+        {
+          "name": "probe",
+          "preset": null,
+          "trust": null,
+          "extract": null,
+          "scheme": {
+            "header": "X-Forwarded-Proto",
+            "mode": "single",
+            "unknown": null
+          },
+          "unknown": null
+        }
+      ],
+      "feedCacheDir": null,
+      "unknown": null
+    },
+    "response_body": null
+  },
+  {
+    "case": "unknown-top",
+    "supplied": {
+      "sources": [
+        {
+          "name": "probe"
+        }
+      ],
+      "unexpectedTop": {
+        "value": "kept"
+      }
+    },
+    "http_status": 200,
+    "new_receives": {
+      "sources": [
+        {
+          "name": "probe",
+          "preset": null,
+          "trust": null,
+          "extract": null,
+          "scheme": null,
+          "unknown": null
+        }
+      ],
+      "feedCacheDir": null,
+      "unknown": {
+        "unexpectedTop": {
+          "value": "kept"
+        }
+      }
+    },
+    "response_body": null
+  },
+  {
+    "case": "unknown-source",
+    "supplied": {
+      "sources": [
+        {
+          "name": "probe",
+          "unexpectedSource": "kept"
+        }
+      ]
+    },
+    "http_status": 200,
+    "new_receives": {
+      "sources": [
+        {
+          "name": "probe",
+          "preset": null,
+          "trust": null,
+          "extract": null,
+          "scheme": null,
+          "unknown": {
+            "unexpectedSource": "kept"
+          }
+        }
+      ],
+      "feedCacheDir": null,
+      "unknown": null
+    },
+    "response_body": null
+  },
+  {
+    "case": "unknown-trust",
+    "supplied": {
+      "sources": [
+        {
+          "name": "probe",
+          "trust": {
+            "unexpectedTrust": "kept"
+          }
+        }
+      ]
+    },
+    "http_status": 200,
+    "new_receives": {
+      "sources": [
+        {
+          "name": "probe",
+          "preset": null,
+          "trust": {
+            "static": null,
+            "feeds": null,
+            "headerIn": null,
+            "hostExact": null,
+            "hostSuffixes": null,
+            "unknown": {
+              "unexpectedTrust": "kept"
+            }
+          },
+          "extract": null,
+          "scheme": null,
+          "unknown": null
+        }
+      ],
+      "feedCacheDir": null,
+      "unknown": null
+    },
+    "response_body": null
+  },
+  {
+    "case": "unknown-feed",
+    "supplied": {
+      "sources": [
+        {
+          "name": "probe",
+          "trust": {
+            "feeds": [
+              {
+                "url": "https://example.invalid/feed",
+                "unexpectedFeed": "kept"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "http_status": 200,
+    "new_receives": {
+      "sources": [
+        {
+          "name": "probe",
+          "preset": null,
+          "trust": {
+            "static": null,
+            "feeds": [
+              {
+                "url": "https://example.invalid/feed",
+                "format": null,
+                "refreshInterval": null,
+                "minEntries": null,
+                "unknown": {
+                  "unexpectedFeed": "kept"
+                }
+              }
+            ],
+            "headerIn": null,
+            "hostExact": null,
+            "hostSuffixes": null,
+            "unknown": null
+          },
+          "extract": null,
+          "scheme": null,
+          "unknown": null
+        }
+      ],
+      "feedCacheDir": null,
+      "unknown": null
+    },
+    "response_body": null
+  },
+  {
+    "case": "unknown-extract",
+    "supplied": {
+      "sources": [
+        {
+          "name": "probe",
+          "extract": {
+            "header": "X-Real-Ip",
+            "mode": "single",
+            "unexpectedExtract": "kept"
+          }
+        }
+      ]
+    },
+    "http_status": 200,
+    "new_receives": {
+      "sources": [
+        {
+          "name": "probe",
+          "preset": null,
+          "trust": null,
+          "extract": {
+            "header": "X-Real-Ip",
+            "mode": "single",
+            "unknown": {
+              "unexpectedExtract": "kept"
+            }
+          },
+          "scheme": null,
+          "unknown": null
+        }
+      ],
+      "feedCacheDir": null,
+      "unknown": null
+    },
+    "response_body": null
+  },
+  {
+    "case": "unknown-scheme",
+    "supplied": {
+      "sources": [
+        {
+          "name": "probe",
+          "scheme": {
+            "header": "X-Forwarded-Proto",
+            "mode": "single",
+            "unexpectedScheme": "kept"
+          }
+        }
+      ]
+    },
+    "http_status": 200,
+    "new_receives": {
+      "sources": [
+        {
+          "name": "probe",
+          "preset": null,
+          "trust": null,
+          "extract": null,
+          "scheme": {
+            "header": "X-Forwarded-Proto",
+            "mode": "single",
+            "unknown": {
+              "unexpectedScheme": "kept"
+            }
+          },
+          "unknown": null
+        }
+      ],
+      "feedCacheDir": null,
+      "unknown": null
+    },
+    "response_body": null
+  },
+  {
+    "case": "unknown-headerIn",
+    "supplied": {
+      "sources": [
+        {
+          "name": "probe",
+          "trust": {
+            "headerIn": {
+              "name": "X-Zone",
+              "values": [
+                "one"
+              ],
+              "unexpectedHeaderIn": "kept"
+            }
+          }
+        }
+      ]
+    },
+    "http_status": 200,
+    "new_receives": {
+      "sources": [
+        {
+          "name": "probe",
+          "preset": null,
+          "trust": {
+            "static": null,
+            "feeds": null,
+            "headerIn": {
+              "name": "X-Zone",
+              "values": [
+                "one"
+              ],
+              "unknown": {
+                "unexpectedHeaderIn": "kept"
+              }
+            },
+            "hostExact": null,
+            "hostSuffixes": null,
+            "unknown": null
+          },
+          "extract": null,
+          "scheme": null,
+          "unknown": null
+        }
+      ],
+      "feedCacheDir": null,
+      "unknown": null
+    },
+    "response_body": null
+  },
+  {
+    "case": "unknown-hostExact",
+    "supplied": {
+      "sources": [
+        {
+          "name": "probe",
+          "trust": {
+            "hostExact": {
+              "header": "X-Host",
+              "values": [
+                "example.com"
+              ],
+              "unexpectedHostExact": "kept"
+            }
+          }
+        }
+      ]
+    },
+    "http_status": 200,
+    "new_receives": {
+      "sources": [
+        {
+          "name": "probe",
+          "preset": null,
+          "trust": {
+            "static": null,
+            "feeds": null,
+            "headerIn": null,
+            "hostExact": {
+              "header": "X-Host",
+              "values": [
+                "example.com"
+              ],
+              "unknown": {
+                "unexpectedHostExact": "kept"
+              }
+            },
+            "hostSuffixes": null,
+            "unknown": null
+          },
+          "extract": null,
+          "scheme": null,
+          "unknown": null
+        }
+      ],
+      "feedCacheDir": null,
+      "unknown": null
+    },
+    "response_body": null
+  },
+  {
+    "case": "unknown-hostSuffixes",
+    "supplied": {
+      "sources": [
+        {
+          "name": "probe",
+          "trust": {
+            "hostSuffixes": {
+              "header": "X-Host",
+              "suffixes": [
+                "example.com"
+              ],
+              "unexpectedHostSuffixes": "kept"
+            }
+          }
+        }
+      ]
+    },
+    "http_status": 200,
+    "new_receives": {
+      "sources": [
+        {
+          "name": "probe",
+          "preset": null,
+          "trust": {
+            "static": null,
+            "feeds": null,
+            "headerIn": null,
+            "hostExact": null,
+            "hostSuffixes": {
+              "header": "X-Host",
+              "suffixes": [
+                "example.com"
+              ],
+              "unknown": {
+                "unexpectedHostSuffixes": "kept"
+              }
+            },
+            "unknown": null
+          },
+          "extract": null,
+          "scheme": null,
+          "unknown": null
+        }
+      ],
+      "feedCacheDir": null,
+      "unknown": null
+    },
+    "response_body": null
+  }
+]

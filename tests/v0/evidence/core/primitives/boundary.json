@@ -1,0 +1,50 @@
+[
+  {
+    "case": "baseline",
+    "supplied": {
+      "values": [
+        "original"
+      ],
+      "nested": {
+        "inner": {
+          "value": "original"
+        }
+      }
+    },
+    "http_status": 200,
+    "new_receives": {
+      "atomicSnapshotTick": 4,
+      "canceledContextIndependent": true,
+      "independentCopies": true,
+      "inputUnchanged": true,
+      "netipMapKeys": true,
+      "registryWorkers": 6,
+      "sameKeyConstructions": 24
+    },
+    "response_body": null
+  },
+  {
+    "case": "second",
+    "supplied": {
+      "values": [
+        "original"
+      ],
+      "nested": {
+        "inner": {
+          "value": "original"
+        }
+      }
+    },
+    "http_status": 200,
+    "new_receives": {
+      "atomicSnapshotTick": 4,
+      "canceledContextIndependent": true,
+      "independentCopies": true,
+      "inputUnchanged": true,
+      "netipMapKeys": true,
+      "registryWorkers": 6,
+      "sameKeyConstructions": 24
+    },
+    "response_body": null
+  }
+]

@@ -1,0 +1,12 @@
+{
+  "baseline": {
+    "values": [
+      "original"
+    ],
+    "nested": {
+      "inner": {
+        "value": "original"
+      }
+    }
+  }
+}

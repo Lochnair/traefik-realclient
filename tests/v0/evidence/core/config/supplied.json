@@ -1,0 +1,362 @@
+{
+  "baseline": {
+    "sources": [
+      {
+        "name": "probe",
+        "preset": "v0"
+      }
+    ]
+  },
+  "replacement": {
+    "sources": [
+      {
+        "name": "probe",
+        "preset": "v0",
+        "trust": {
+          "static": [
+            "198.51.100.0/24"
+          ],
+          "headerIn": {
+            "name": "X-Zone",
+            "values": [
+              "yes"
+            ]
+          }
+        },
+        "scheme": {
+          "header": "X-Scheme",
+          "mode": "single"
+        }
+      }
+    ]
+  },
+  "null-inherits": {
+    "sources": [
+      {
+        "name": "probe",
+        "preset": "v0",
+        "scheme": null
+      }
+    ]
+  },
+  "empty-feeds": {
+    "sources": [
+      {
+        "name": "probe",
+        "preset": "v0",
+        "trust": {
+          "feeds": []
+        }
+      }
+    ]
+  },
+  "unknown-extract-mode": {
+    "sources": [
+      {
+        "name": "probe",
+        "preset": "v0",
+        "extract": {
+          "header": "X-Real-Ip",
+          "mode": "invalid"
+        }
+      }
+    ]
+  },
+  "unknown-scheme-mode": {
+    "sources": [
+      {
+        "name": "probe",
+        "preset": "v0",
+        "scheme": {
+          "header": "X-Forwarded-Proto",
+          "mode": "invalid"
+        }
+      }
+    ]
+  },
+  "empty-static": {
+    "sources": [
+      {
+        "name": "probe",
+        "preset": "v0",
+        "trust": {
+          "static": []
+        }
+      }
+    ]
+  },
+  "empty-string-static": {
+    "sources": [
+      {
+        "name": "probe",
+        "preset": "v0",
+        "trust": {
+          "static": ""
+        }
+      }
+    ]
+  },
+  "empty-predicate-values": {
+    "sources": [
+      {
+        "name": "probe",
+        "preset": "v0",
+        "trust": {
+          "headerIn": {
+            "name": "X-Zone",
+            "values": []
+          }
+        }
+      }
+    ]
+  },
+  "empty-sources": {
+    "sources": []
+  },
+  "unknown-top": {
+    "sources": [
+      {
+        "name": "probe",
+        "preset": "v0"
+      }
+    ],
+    "allowPrivateClient": true
+  },
+  "unknown-nested": {
+    "sources": [
+      {
+        "name": "probe",
+        "preset": "v0",
+        "trust": {
+          "headerEquals": {
+            "value": "wrong"
+          }
+        }
+      }
+    ]
+  },
+  "unknown-preset": {
+    "sources": [
+      {
+        "name": "probe",
+        "preset": "not-v0"
+      }
+    ]
+  },
+  "decimal": {
+    "sources": [
+      {
+        "name": "probe",
+        "preset": "v0",
+        "trust": {
+          "feeds": [
+            {
+              "url": "https://example.invalid/feed",
+              "format": "lines",
+              "minEntries": "1",
+              "refreshInterval": "1s"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "numeric": {
+    "sources": [
+      {
+        "name": "probe",
+        "preset": "v0",
+        "trust": {
+          "feeds": [
+            {
+              "url": "https://example.invalid/feed",
+              "format": "lines",
+              "minEntries": 1,
+              "refreshInterval": "1s"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "fraction": {
+    "sources": [
+      {
+        "name": "probe",
+        "preset": "v0",
+        "trust": {
+          "feeds": [
+            {
+              "url": "https://example.invalid/feed",
+              "format": "lines",
+              "minEntries": 1.5,
+              "refreshInterval": "1s"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "signed": {
+    "sources": [
+      {
+        "name": "probe",
+        "preset": "v0",
+        "trust": {
+          "feeds": [
+            {
+              "url": "https://example.invalid/feed",
+              "format": "lines",
+              "minEntries": "+1",
+              "refreshInterval": "1s"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "spaces": {
+    "sources": [
+      {
+        "name": "probe",
+        "preset": "v0",
+        "trust": {
+          "feeds": [
+            {
+              "url": "https://example.invalid/feed",
+              "format": "lines",
+              "minEntries": " 1",
+              "refreshInterval": "1s"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "exponent": {
+    "sources": [
+      {
+        "name": "probe",
+        "preset": "v0",
+        "trust": {
+          "feeds": [
+            {
+              "url": "https://example.invalid/feed",
+              "format": "lines",
+              "minEntries": "1e2",
+              "refreshInterval": "1s"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "overflow": {
+    "sources": [
+      {
+        "name": "probe",
+        "preset": "v0",
+        "trust": {
+          "feeds": [
+            {
+              "url": "https://example.invalid/feed",
+              "format": "lines",
+              "minEntries": "18446744073709551616",
+              "refreshInterval": "1s"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "range": {
+    "sources": [
+      {
+        "name": "probe",
+        "preset": "v0",
+        "trust": {
+          "feeds": [
+            {
+              "url": "https://example.invalid/feed",
+              "format": "lines",
+              "minEntries": "100001",
+              "refreshInterval": "1s"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "zero": {
+    "sources": [
+      {
+        "name": "probe",
+        "preset": "v0",
+        "trust": {
+          "feeds": [
+            {
+              "url": "https://example.invalid/feed",
+              "format": "lines",
+              "minEntries": "0",
+              "refreshInterval": "1s"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "invalid-duration": {
+    "sources": [
+      {
+        "name": "probe",
+        "preset": "v0",
+        "trust": {
+          "feeds": [
+            {
+              "url": "https://example.invalid/feed",
+              "format": "lines",
+              "minEntries": "1",
+              "refreshInterval": "fast"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "numeric-duration": {
+    "sources": [
+      {
+        "name": "probe",
+        "preset": "v0",
+        "trust": {
+          "feeds": [
+            {
+              "url": "https://example.invalid/feed",
+              "format": "lines",
+              "minEntries": "1",
+              "refreshInterval": 2
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "short-duration": {
+    "sources": [
+      {
+        "name": "probe",
+        "preset": "v0",
+        "trust": {
+          "feeds": [
+            {
+              "url": "https://example.invalid/feed",
+              "format": "lines",
+              "minEntries": "1",
+              "refreshInterval": "500ms"
+            }
+          ]
+        }
+      }
+    ]
+  }
+}

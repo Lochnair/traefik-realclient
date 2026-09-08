@@ -1,0 +1,213 @@
+{
+  "http": {
+    "routers": {
+      "secure": {
+        "rule": "PathPrefix(`/covered`)",
+        "entryPoints": [
+          "secure"
+        ],
+        "service": "echo"
+      },
+      "insecure": {
+        "rule": "PathPrefix(`/covered`)",
+        "entryPoints": [
+          "insecure"
+        ],
+        "service": "echo"
+      },
+      "allowed": {
+        "rule": "PathPrefix(`/covered`)",
+        "entryPoints": [
+          "allowed"
+        ],
+        "service": "echo"
+      },
+      "reverse": {
+        "rule": "PathPrefix(`/covered`)",
+        "entryPoints": [
+          "reverse"
+        ],
+        "service": "echo"
+      },
+      "selector": {
+        "rule": "PathPrefix(`/covered`)",
+        "entryPoints": [
+          "selector"
+        ],
+        "service": "echo"
+      },
+      "selectorallowed": {
+        "rule": "PathPrefix(`/covered`)",
+        "entryPoints": [
+          "selectorallowed"
+        ],
+        "service": "echo"
+      },
+      "proxy": {
+        "rule": "PathPrefix(`/covered`)",
+        "entryPoints": [
+          "proxy"
+        ],
+        "service": "echo"
+      },
+      "root-peer": {
+        "rule": "Path(`/root-peer`) && ClientIP(`127.0.0.1/32`)",
+        "entryPoints": [
+          "insecure"
+        ],
+        "service": "echo"
+      },
+      "root-effective": {
+        "rule": "Path(`/root-effective`) && ClientIP(`198.51.100.2/32`)",
+        "entryPoints": [
+          "insecure"
+        ],
+        "service": "echo"
+      },
+      "parent": {
+        "rule": "PathPrefix(`/parent`)",
+        "entryPoints": [
+          "insecure"
+        ]
+      },
+      "child": {
+        "rule": "Path(`/parent/child`) && ClientIP(`198.51.100.2/32`)",
+        "parentRefs": [
+          "parent"
+        ],
+        "service": "echo"
+      },
+      "tls-a": {
+        "rule": "Host(`a.example`)",
+        "entryPoints": [
+          "tls"
+        ],
+        "service": "echo",
+        "tls": {
+          "options": "a"
+        }
+      },
+      "tls-b": {
+        "rule": "Host(`b.example`)",
+        "entryPoints": [
+          "tls"
+        ],
+        "service": "echo",
+        "tls": {
+          "options": "b"
+        }
+      }
+    },
+    "middlewares": {
+      "secure": {
+        "plugin": {
+          "probe": {
+            "inputs": [
+              "X-Custom-Ip",
+              "X-Real-Ip"
+            ]
+          }
+        }
+      },
+      "insecure": {
+        "plugin": {
+          "probe": {
+            "inputs": [
+              "X-Custom-Ip",
+              "X-Real-Ip"
+            ]
+          }
+        }
+      },
+      "allowed": {
+        "plugin": {
+          "probe": {
+            "inputs": [
+              "X-Custom-Ip",
+              "X-Real-Ip"
+            ]
+          }
+        }
+      },
+      "reverse": {
+        "plugin": {
+          "probe": {
+            "inputs": [
+              "X-Real-Ip",
+              "X-Custom-Ip"
+            ]
+          }
+        }
+      },
+      "selector": {
+        "plugin": {
+          "probe": {
+            "inputs": [
+              "X-Custom-Ip",
+              "X-Real-Ip"
+            ],
+            "selector": "X-Zone"
+          }
+        }
+      },
+      "selectorallowed": {
+        "plugin": {
+          "probe": {
+            "inputs": [
+              "X-Custom-Ip",
+              "X-Real-Ip"
+            ],
+            "selector": "X-Zone"
+          }
+        }
+      },
+      "proxy": {
+        "plugin": {
+          "probe": {
+            "inputs": [
+              "X-Custom-Ip",
+              "X-Real-Ip"
+            ]
+          }
+        }
+      },
+      "tls": {
+        "plugin": {
+          "probe": {
+            "inputs": [
+              "X-Custom-Ip",
+              "X-Real-Ip"
+            ]
+          }
+        }
+      }
+    },
+    "services": {
+      "echo": {
+        "loadBalancer": {
+          "servers": [
+            {
+              "url": "http://127.0.0.1:64494"
+            }
+          ]
+        }
+      }
+    }
+  },
+  "tls": {
+    "certificates": [
+      {
+        "certFile": "/var/folders/03/r3bpgcsn3n55nzv5xv8330g00000gn/T/realclient-runtime-w4fkbggp/cert.pem",
+        "keyFile": "/var/folders/03/r3bpgcsn3n55nzv5xv8330g00000gn/T/realclient-runtime-w4fkbggp/key.pem"
+      }
+    ],
+    "options": {
+      "a": {
+        "minVersion": "VersionTLS12"
+      },
+      "b": {
+        "minVersion": "VersionTLS13"
+      }
+    }
+  }
+}

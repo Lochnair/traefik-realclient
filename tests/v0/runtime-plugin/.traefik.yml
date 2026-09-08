@@ -1,0 +1,5 @@
+displayName: Realclient V0 boundary probe
+type: middleware
+import: example.com/realclientv0
+summary: Disposable configuration observation probe, not Realclient
+testData: {}

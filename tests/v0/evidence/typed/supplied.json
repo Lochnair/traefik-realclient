@@ -1,0 +1,239 @@
+{
+  "baseline": {
+    "sources": [
+      {
+        "name": "probe"
+      }
+    ]
+  },
+  "trust-empty": {
+    "sources": [
+      {
+        "name": "probe",
+        "trust": {}
+      }
+    ]
+  },
+  "static-omitted": {
+    "sources": [
+      {
+        "name": "probe",
+        "trust": {
+          "feeds": [
+            {
+              "url": "https://example.invalid/feed"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "static-empty": {
+    "sources": [
+      {
+        "name": "probe",
+        "trust": {
+          "static": []
+        }
+      }
+    ]
+  },
+  "static-string": {
+    "sources": [
+      {
+        "name": "probe",
+        "trust": {
+          "static": ""
+        }
+      }
+    ]
+  },
+  "static-null": {
+    "sources": [
+      {
+        "name": "probe",
+        "trust": {
+          "static": null
+        }
+      }
+    ]
+  },
+  "static-valid": {
+    "sources": [
+      {
+        "name": "probe",
+        "trust": {
+          "static": [
+            "192.0.2.0/24"
+          ]
+        }
+      }
+    ]
+  },
+  "feeds-empty": {
+    "sources": [
+      {
+        "name": "probe",
+        "trust": {
+          "feeds": []
+        }
+      }
+    ]
+  },
+  "sources-empty": {
+    "sources": []
+  },
+  "sources-omitted": {
+    "feedCacheDir": "/unused"
+  },
+  "scheme-empty": {
+    "sources": [
+      {
+        "name": "probe",
+        "scheme": {}
+      }
+    ]
+  },
+  "scheme-null": {
+    "sources": [
+      {
+        "name": "probe",
+        "scheme": null
+      }
+    ]
+  },
+  "scheme-string": {
+    "sources": [
+      {
+        "name": "probe",
+        "scheme": ""
+      }
+    ]
+  },
+  "scheme-valid": {
+    "sources": [
+      {
+        "name": "probe",
+        "scheme": {
+          "header": "X-Forwarded-Proto",
+          "mode": "single"
+        }
+      }
+    ]
+  },
+  "unknown-top": {
+    "sources": [
+      {
+        "name": "probe"
+      }
+    ],
+    "unexpectedTop": {
+      "value": "kept"
+    }
+  },
+  "unknown-source": {
+    "sources": [
+      {
+        "name": "probe",
+        "unexpectedSource": "kept"
+      }
+    ]
+  },
+  "unknown-trust": {
+    "sources": [
+      {
+        "name": "probe",
+        "trust": {
+          "unexpectedTrust": "kept"
+        }
+      }
+    ]
+  },
+  "unknown-feed": {
+    "sources": [
+      {
+        "name": "probe",
+        "trust": {
+          "feeds": [
+            {
+              "url": "https://example.invalid/feed",
+              "unexpectedFeed": "kept"
+            }
+          ]
+        }
+      }
+    ]
+  },
+  "unknown-extract": {
+    "sources": [
+      {
+        "name": "probe",
+        "extract": {
+          "header": "X-Real-Ip",
+          "mode": "single",
+          "unexpectedExtract": "kept"
+        }
+      }
+    ]
+  },
+  "unknown-scheme": {
+    "sources": [
+      {
+        "name": "probe",
+        "scheme": {
+          "header": "X-Forwarded-Proto",
+          "mode": "single",
+          "unexpectedScheme": "kept"
+        }
+      }
+    ]
+  },
+  "unknown-headerIn": {
+    "sources": [
+      {
+        "name": "probe",
+        "trust": {
+          "headerIn": {
+            "name": "X-Zone",
+            "values": [
+              "one"
+            ],
+            "unexpectedHeaderIn": "kept"
+          }
+        }
+      }
+    ]
+  },
+  "unknown-hostExact": {
+    "sources": [
+      {
+        "name": "probe",
+        "trust": {
+          "hostExact": {
+            "header": "X-Host",
+            "values": [
+              "example.com"
+            ],
+            "unexpectedHostExact": "kept"
+          }
+        }
+      }
+    ]
+  },
+  "unknown-hostSuffixes": {
+    "sources": [
+      {
+        "name": "probe",
+        "trust": {
+          "hostSuffixes": {
+            "header": "X-Host",
+            "suffixes": [
+              "example.com"
+            ],
+            "unexpectedHostSuffixes": "kept"
+          }
+        }
+      }
+    ]
+  }
+}

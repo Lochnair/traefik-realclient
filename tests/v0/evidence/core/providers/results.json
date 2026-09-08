@@ -1,0 +1,237 @@
+[
+  {
+    "case": "docker-good",
+    "passed": true,
+    "status": 200,
+    "actual": {
+      "decoded": {
+        "sources": [
+          {
+            "name": "probe",
+            "preset": "v0",
+            "trust": {
+              "static": null,
+              "feeds": [
+                {
+                  "url": "https://example.invalid/feed",
+                  "format": "lines",
+                  "refreshInterval": "1s",
+                  "minEntries": "1",
+                  "unknown": null
+                }
+              ],
+              "headerIn": null,
+              "hostExact": null,
+              "hostSuffixes": null,
+              "unknown": null
+            },
+            "extract": null,
+            "scheme": null,
+            "unknown": null
+          }
+        ],
+        "feedCacheDir": null,
+        "unknown": null
+      },
+      "effective": {
+        "sources": [
+          {
+            "name": "probe",
+            "preset": "v0",
+            "trust": {
+              "static": [
+                "192.0.2.0/24"
+              ],
+              "feeds": [
+                {
+                  "url": "https://example.invalid/feed",
+                  "format": "lines",
+                  "refreshInterval": "1s",
+                  "minEntries": "1",
+                  "unknown": null
+                }
+              ],
+              "headerIn": null,
+              "hostExact": null,
+              "hostSuffixes": null,
+              "unknown": null
+            },
+            "extract": {
+              "header": "X-Real-Ip",
+              "mode": "single",
+              "unknown": null
+            },
+            "scheme": {
+              "header": "X-Forwarded-Proto",
+              "mode": "single",
+              "unknown": null
+            },
+            "unknown": null
+          }
+        ],
+        "feedCacheDir": null,
+        "unknown": null
+      },
+      "inputUnchanged": true
+    }
+  },
+  {
+    "case": "docker-unknown",
+    "passed": true,
+    "status": 404,
+    "actual": "404 page not found\n"
+  },
+  {
+    "case": "docker-fraction",
+    "passed": true,
+    "status": 404,
+    "actual": "404 page not found\n"
+  },
+  {
+    "case": "docker-empty",
+    "passed": true,
+    "status": 404,
+    "actual": "404 page not found\n"
+  },
+  {
+    "case": "redis-good",
+    "passed": true,
+    "status": 200,
+    "actual": {
+      "decoded": {
+        "sources": [
+          {
+            "name": "probe",
+            "preset": "v0",
+            "trust": {
+              "static": null,
+              "feeds": [
+                {
+                  "url": "https://example.invalid/feed",
+                  "format": "lines",
+                  "refreshInterval": "1s",
+                  "minEntries": "1",
+                  "unknown": null
+                }
+              ],
+              "headerIn": null,
+              "hostExact": null,
+              "hostSuffixes": null,
+              "unknown": null
+            },
+            "extract": null,
+            "scheme": null,
+            "unknown": null
+          }
+        ],
+        "feedCacheDir": null,
+        "unknown": null
+      },
+      "effective": {
+        "sources": [
+          {
+            "name": "probe",
+            "preset": "v0",
+            "trust": {
+              "static": [
+                "192.0.2.0/24"
+              ],
+              "feeds": [
+                {
+                  "url": "https://example.invalid/feed",
+                  "format": "lines",
+                  "refreshInterval": "1s",
+                  "minEntries": "1",
+                  "unknown": null
+                }
+              ],
+              "headerIn": null,
+              "hostExact": null,
+              "hostSuffixes": null,
+              "unknown": null
+            },
+            "extract": {
+              "header": "X-Real-Ip",
+              "mode": "single",
+              "unknown": null
+            },
+            "scheme": {
+              "header": "X-Forwarded-Proto",
+              "mode": "single",
+              "unknown": null
+            },
+            "unknown": null
+          }
+        ],
+        "feedCacheDir": null,
+        "unknown": null
+      },
+      "inputUnchanged": true
+    }
+  },
+  {
+    "case": "redis-unknown",
+    "passed": true,
+    "status": 404,
+    "actual": "404 page not found\n"
+  },
+  {
+    "case": "redis-fraction",
+    "passed": true,
+    "status": 404,
+    "actual": "404 page not found\n"
+  },
+  {
+    "case": "redis-empty",
+    "passed": true,
+    "status": 200,
+    "actual": {
+      "decoded": {
+        "sources": [
+          {
+            "name": "probe",
+            "preset": "v0",
+            "trust": null,
+            "extract": null,
+            "scheme": null,
+            "unknown": null
+          }
+        ],
+        "feedCacheDir": null,
+        "unknown": null
+      },
+      "effective": {
+        "sources": [
+          {
+            "name": "probe",
+            "preset": "v0",
+            "trust": {
+              "static": [
+                "192.0.2.0/24"
+              ],
+              "feeds": null,
+              "headerIn": null,
+              "hostExact": null,
+              "hostSuffixes": null,
+              "unknown": null
+            },
+            "extract": {
+              "header": "X-Real-Ip",
+              "mode": "single",
+              "unknown": null
+            },
+            "scheme": {
+              "header": "X-Forwarded-Proto",
+              "mode": "single",
+              "unknown": null
+            },
+            "unknown": null
+          }
+        ],
+        "feedCacheDir": null,
+        "unknown": null
+      },
+      "inputUnchanged": true
+    }
+  }
+]

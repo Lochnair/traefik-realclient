@@ -1,0 +1,470 @@
+[
+  {
+    "case": "secure-strips",
+    "passed": true,
+    "status": 200,
+    "response": {
+      "headers": {
+        "Host": "127.0.0.1:64495",
+        "Accept-Encoding": "identity",
+        "X-Forwarded-For": "127.0.0.1",
+        "X-Forwarded-Host": "127.0.0.1:64495",
+        "X-Forwarded-Port": "64495",
+        "X-Forwarded-Proto": "http",
+        "X-Forwarded-Server": "halyard.int.oandc.fun",
+        "X-Real-Ip": "127.0.0.1",
+        "X-V0-After-Peer": "127.0.0.1:0",
+        "X-V0-Before": "{\"Peer\":\"127.0.0.1:64508\",\"Headers\":{\"Accept-Encoding\":[\"identity\"],\"X-Forwarded-Host\":[\"127.0.0.1:64495\"],\"X-Forwarded-Port\":[\"64495\"],\"X-Forwarded-Proto\":[\"http\"],\"X-Forwarded-Server\":[\"halyard.int.oandc.fun\"],\"X-Real-Ip\":[\"127.0.0.1\"]},\"TLS\":false,\"Proto\":\"HTTP/1.1\"}",
+        "X-V0-Selected": "X-Real-Ip",
+        "X-V0-Tls-Preserved": "true"
+      },
+      "path": "/covered/secure-strips"
+    }
+  },
+  {
+    "case": "insecure-preserves",
+    "passed": true,
+    "status": 200,
+    "response": {
+      "headers": {
+        "Host": "127.0.0.1:64496",
+        "Accept-Encoding": "identity",
+        "X-Forwarded-For": "198.51.100.1",
+        "X-Forwarded-Host": "127.0.0.1:64496",
+        "X-Forwarded-Port": "64496",
+        "X-Forwarded-Proto": "https",
+        "X-Forwarded-Server": "halyard.int.oandc.fun",
+        "X-Real-Ip": "198.51.100.1",
+        "X-V0-After-Peer": "198.51.100.1:0",
+        "X-V0-Before": "{\"Peer\":\"127.0.0.1:64509\",\"Headers\":{\"Accept-Encoding\":[\"identity\"],\"X-Forwarded-Host\":[\"127.0.0.1:64496\"],\"X-Forwarded-Port\":[\"64496\"],\"X-Forwarded-Proto\":[\"https\"],\"X-Forwarded-Server\":[\"halyard.int.oandc.fun\"],\"X-Real-Ip\":[\"198.51.100.1\"]},\"TLS\":false,\"Proto\":\"HTTP/1.1\"}",
+        "X-V0-Selected": "X-Real-Ip",
+        "X-V0-Tls-Preserved": "true"
+      },
+      "path": "/covered/insecure-preserves"
+    }
+  },
+  {
+    "case": "synthesized-preempts",
+    "passed": true,
+    "status": 200,
+    "response": {
+      "headers": {
+        "Host": "127.0.0.1:64498",
+        "Accept-Encoding": "identity",
+        "X-Custom-Ip": "198.51.100.2",
+        "X-Forwarded-For": "127.0.0.1",
+        "X-Forwarded-Host": "127.0.0.1:64498",
+        "X-Forwarded-Port": "64498",
+        "X-Forwarded-Proto": "http",
+        "X-Forwarded-Server": "halyard.int.oandc.fun",
+        "X-Real-Ip": "127.0.0.1",
+        "X-V0-After-Peer": "127.0.0.1:0",
+        "X-V0-Before": "{\"Peer\":\"127.0.0.1:64510\",\"Headers\":{\"Accept-Encoding\":[\"identity\"],\"X-Custom-Ip\":[\"198.51.100.2\"],\"X-Forwarded-Host\":[\"127.0.0.1:64498\"],\"X-Forwarded-Port\":[\"64498\"],\"X-Forwarded-Proto\":[\"http\"],\"X-Forwarded-Server\":[\"halyard.int.oandc.fun\"],\"X-Real-Ip\":[\"127.0.0.1\"]},\"TLS\":false,\"Proto\":\"HTTP/1.1\"}",
+        "X-V0-Selected": "X-Real-Ip",
+        "X-V0-Tls-Preserved": "true"
+      },
+      "path": "/covered/synthesized-preempts"
+    }
+  },
+  {
+    "case": "informative-first",
+    "passed": true,
+    "status": 200,
+    "response": {
+      "headers": {
+        "Host": "127.0.0.1:64496",
+        "Accept-Encoding": "identity",
+        "X-Custom-Ip": "198.51.100.2",
+        "X-Forwarded-For": "198.51.100.2",
+        "X-Forwarded-Host": "127.0.0.1:64496",
+        "X-Forwarded-Port": "64496",
+        "X-Forwarded-Proto": "http",
+        "X-Forwarded-Server": "halyard.int.oandc.fun",
+        "X-Real-Ip": "198.51.100.2",
+        "X-V0-After-Peer": "198.51.100.2:0",
+        "X-V0-Before": "{\"Peer\":\"127.0.0.1:64511\",\"Headers\":{\"Accept-Encoding\":[\"identity\"],\"X-Custom-Ip\":[\"198.51.100.2\"],\"X-Forwarded-Host\":[\"127.0.0.1:64496\"],\"X-Forwarded-Port\":[\"64496\"],\"X-Forwarded-Proto\":[\"http\"],\"X-Forwarded-Server\":[\"halyard.int.oandc.fun\"],\"X-Real-Ip\":[\"127.0.0.1\"]},\"TLS\":false,\"Proto\":\"HTTP/1.1\"}",
+        "X-V0-Selected": "X-Custom-Ip",
+        "X-V0-Tls-Preserved": "true"
+      },
+      "path": "/covered/informative-first"
+    }
+  },
+  {
+    "case": "invalid-continues",
+    "passed": true,
+    "status": 200,
+    "response": {
+      "headers": {
+        "Host": "127.0.0.1:64498",
+        "Accept-Encoding": "identity",
+        "X-Custom-Ip": "198.51.100.2",
+        "X-Forwarded-For": "198.51.100.2",
+        "X-Forwarded-Host": "127.0.0.1:64498",
+        "X-Forwarded-Port": "64498",
+        "X-Forwarded-Proto": "http",
+        "X-Forwarded-Server": "halyard.int.oandc.fun",
+        "X-Real-Ip": "198.51.100.2",
+        "X-V0-After-Peer": "198.51.100.2:0",
+        "X-V0-Before": "{\"Peer\":\"127.0.0.1:64512\",\"Headers\":{\"Accept-Encoding\":[\"identity\"],\"X-Custom-Ip\":[\"198.51.100.2\"],\"X-Forwarded-Host\":[\"127.0.0.1:64498\"],\"X-Forwarded-Port\":[\"64498\"],\"X-Forwarded-Proto\":[\"http\"],\"X-Forwarded-Server\":[\"halyard.int.oandc.fun\"],\"X-Real-Ip\":[\"invalid\"]},\"TLS\":false,\"Proto\":\"HTTP/1.1\"}",
+        "X-V0-Selected": "X-Custom-Ip",
+        "X-V0-Tls-Preserved": "true"
+      },
+      "path": "/covered/invalid-continues"
+    }
+  },
+  {
+    "case": "connection-removes-identity",
+    "passed": true,
+    "status": 200,
+    "response": {
+      "headers": {
+        "Host": "127.0.0.1:64496",
+        "Accept-Encoding": "identity",
+        "X-Forwarded-For": "127.0.0.1",
+        "X-Forwarded-Host": "127.0.0.1:64496",
+        "X-Forwarded-Port": "64496",
+        "X-Forwarded-Proto": "http",
+        "X-Forwarded-Server": "halyard.int.oandc.fun",
+        "X-Real-Ip": "127.0.0.1",
+        "X-V0-After-Peer": "127.0.0.1:0",
+        "X-V0-Before": "{\"Peer\":\"127.0.0.1:64513\",\"Headers\":{\"Accept-Encoding\":[\"identity\"],\"X-Forwarded-Host\":[\"127.0.0.1:64496\"],\"X-Forwarded-Port\":[\"64496\"],\"X-Forwarded-Proto\":[\"http\"],\"X-Forwarded-Server\":[\"halyard.int.oandc.fun\"],\"X-Real-Ip\":[\"127.0.0.1\"]},\"TLS\":false,\"Proto\":\"HTTP/1.1\"}",
+        "X-V0-Selected": "X-Real-Ip",
+        "X-V0-Tls-Preserved": "true"
+      },
+      "path": "/covered/connection-removes-identity"
+    }
+  },
+  {
+    "case": "connection-causes-fallback",
+    "passed": true,
+    "status": 200,
+    "response": {
+      "headers": {
+        "Host": "127.0.0.1:64496",
+        "Accept-Encoding": "identity",
+        "X-Forwarded-For": "127.0.0.1",
+        "X-Forwarded-Host": "127.0.0.1:64496",
+        "X-Forwarded-Port": "64496",
+        "X-Forwarded-Proto": "http",
+        "X-Forwarded-Server": "halyard.int.oandc.fun",
+        "X-Real-Ip": "127.0.0.1",
+        "X-V0-After-Peer": "127.0.0.1:64514",
+        "X-V0-Before": "{\"Peer\":\"127.0.0.1:64514\",\"Headers\":{\"Accept-Encoding\":[\"identity\"],\"X-Forwarded-Host\":[\"127.0.0.1:64496\"],\"X-Forwarded-Port\":[\"64496\"],\"X-Forwarded-Proto\":[\"http\"],\"X-Forwarded-Server\":[\"halyard.int.oandc.fun\"],\"X-Real-Ip\":[\"invalid\"]},\"TLS\":false,\"Proto\":\"HTTP/1.1\"}",
+        "X-V0-Selected": "peer",
+        "X-V0-Tls-Preserved": "true"
+      },
+      "path": "/covered/connection-causes-fallback"
+    }
+  },
+  {
+    "case": "connection-allowlist-identity",
+    "passed": true,
+    "status": 200,
+    "response": {
+      "headers": {
+        "Host": "127.0.0.1:64497",
+        "Accept-Encoding": "identity",
+        "X-Forwarded-For": "198.51.100.2",
+        "X-Forwarded-Host": "127.0.0.1:64497",
+        "X-Forwarded-Port": "64497",
+        "X-Forwarded-Proto": "http",
+        "X-Forwarded-Server": "halyard.int.oandc.fun",
+        "X-Real-Ip": "198.51.100.2",
+        "X-V0-After-Peer": "198.51.100.2:0",
+        "X-V0-Before": "{\"Peer\":\"127.0.0.1:64515\",\"Headers\":{\"Accept-Encoding\":[\"identity\"],\"Connection\":[\"X-Custom-Ip\"],\"X-Custom-Ip\":[\"198.51.100.2\"],\"X-Forwarded-Host\":[\"127.0.0.1:64497\"],\"X-Forwarded-Port\":[\"64497\"],\"X-Forwarded-Proto\":[\"http\"],\"X-Forwarded-Server\":[\"halyard.int.oandc.fun\"],\"X-Real-Ip\":[\"127.0.0.1\"]},\"TLS\":false,\"Proto\":\"HTTP/1.1\"}",
+        "X-V0-Selected": "X-Custom-Ip",
+        "X-V0-Tls-Preserved": "true"
+      },
+      "path": "/covered/connection-allowlist-identity"
+    }
+  },
+  {
+    "case": "connection-removes-selector",
+    "passed": true,
+    "status": 200,
+    "response": {
+      "headers": {
+        "Host": "127.0.0.1:64499",
+        "Accept-Encoding": "identity",
+        "X-Custom-Ip": "198.51.100.2",
+        "X-Forwarded-For": "127.0.0.1",
+        "X-Forwarded-Host": "127.0.0.1:64499",
+        "X-Forwarded-Port": "64499",
+        "X-Forwarded-Proto": "http",
+        "X-Forwarded-Server": "halyard.int.oandc.fun",
+        "X-Real-Ip": "127.0.0.1",
+        "X-V0-After-Peer": "127.0.0.1:0",
+        "X-V0-Before": "{\"Peer\":\"127.0.0.1:64516\",\"Headers\":{\"Accept-Encoding\":[\"identity\"],\"X-Custom-Ip\":[\"198.51.100.2\"],\"X-Forwarded-Host\":[\"127.0.0.1:64499\"],\"X-Forwarded-Port\":[\"64499\"],\"X-Forwarded-Proto\":[\"http\"],\"X-Forwarded-Server\":[\"halyard.int.oandc.fun\"],\"X-Real-Ip\":[\"127.0.0.1\"]},\"TLS\":false,\"Proto\":\"HTTP/1.1\"}",
+        "X-V0-Selected": "X-Real-Ip",
+        "X-V0-Tls-Preserved": "true"
+      },
+      "path": "/covered/connection-removes-selector"
+    }
+  },
+  {
+    "case": "connection-allowlist-selector",
+    "passed": true,
+    "status": 200,
+    "response": {
+      "headers": {
+        "Host": "127.0.0.1:64500",
+        "Accept-Encoding": "identity",
+        "X-Custom-Ip": "198.51.100.2",
+        "X-Forwarded-For": "198.51.100.2",
+        "X-Forwarded-Host": "127.0.0.1:64500",
+        "X-Forwarded-Port": "64500",
+        "X-Forwarded-Proto": "http",
+        "X-Forwarded-Server": "halyard.int.oandc.fun",
+        "X-Real-Ip": "198.51.100.2",
+        "X-V0-After-Peer": "198.51.100.2:0",
+        "X-V0-Before": "{\"Peer\":\"127.0.0.1:64517\",\"Headers\":{\"Accept-Encoding\":[\"identity\"],\"Connection\":[\"X-Zone\"],\"X-Custom-Ip\":[\"198.51.100.2\"],\"X-Forwarded-Host\":[\"127.0.0.1:64500\"],\"X-Forwarded-Port\":[\"64500\"],\"X-Forwarded-Proto\":[\"http\"],\"X-Forwarded-Server\":[\"halyard.int.oandc.fun\"],\"X-Real-Ip\":[\"127.0.0.1\"],\"X-Zone\":[\"yes\"]},\"TLS\":false,\"Proto\":\"HTTP/1.1\"}",
+        "X-V0-Selected": "X-Custom-Ip",
+        "X-V0-Tls-Preserved": "true"
+      },
+      "path": "/covered/connection-allowlist-selector"
+    }
+  },
+  {
+    "case": "peer-fallback",
+    "passed": true,
+    "status": 200,
+    "response": {
+      "headers": {
+        "Host": "127.0.0.1:64496",
+        "Accept-Encoding": "identity",
+        "X-Forwarded-For": "127.0.0.1",
+        "X-Forwarded-Host": "127.0.0.1:64496",
+        "X-Forwarded-Port": "64496",
+        "X-Forwarded-Proto": "http",
+        "X-Forwarded-Server": "halyard.int.oandc.fun",
+        "X-Real-Ip": "127.0.0.1",
+        "X-V0-After-Peer": "127.0.0.1:64518",
+        "X-V0-Before": "{\"Peer\":\"127.0.0.1:64518\",\"Headers\":{\"Accept-Encoding\":[\"identity\"],\"X-Forwarded-Host\":[\"127.0.0.1:64496\"],\"X-Forwarded-Port\":[\"64496\"],\"X-Forwarded-Proto\":[\"http\"],\"X-Forwarded-Server\":[\"halyard.int.oandc.fun\"],\"X-Real-Ip\":[\"invalid\"]},\"TLS\":false,\"Proto\":\"HTTP/1.1\"}",
+        "X-V0-Selected": "peer",
+        "X-V0-Tls-Preserved": "true"
+      },
+      "path": "/covered/peer-fallback"
+    }
+  },
+  {
+    "case": "backend-xff",
+    "passed": true,
+    "status": 200,
+    "response": {
+      "headers": {
+        "Host": "127.0.0.1:64496",
+        "Accept-Encoding": "identity",
+        "X-Custom-Ip": "198.51.100.2",
+        "X-Forwarded-For": "198.51.100.2",
+        "X-Forwarded-Host": "127.0.0.1:64496",
+        "X-Forwarded-Port": "64496",
+        "X-Forwarded-Proto": "http",
+        "X-Forwarded-Server": "halyard.int.oandc.fun",
+        "X-Real-Ip": "198.51.100.2",
+        "X-V0-After-Peer": "198.51.100.2:0",
+        "X-V0-Before": "{\"Peer\":\"127.0.0.1:64519\",\"Headers\":{\"Accept-Encoding\":[\"identity\"],\"X-Custom-Ip\":[\"198.51.100.2\"],\"X-Forwarded-For\":[\"203.0.113.99\"],\"X-Forwarded-Host\":[\"127.0.0.1:64496\"],\"X-Forwarded-Port\":[\"64496\"],\"X-Forwarded-Proto\":[\"http\"],\"X-Forwarded-Server\":[\"halyard.int.oandc.fun\"],\"X-Real-Ip\":[\"127.0.0.1\"]},\"TLS\":false,\"Proto\":\"HTTP/1.1\"}",
+        "X-V0-Selected": "X-Custom-Ip",
+        "X-V0-Tls-Preserved": "true"
+      },
+      "path": "/covered/backend-xff"
+    }
+  },
+  {
+    "case": "unmatched",
+    "passed": true,
+    "status": 404,
+    "response": "404 page not found\n"
+  },
+  {
+    "case": "root-sees-peer",
+    "passed": true,
+    "status": 200,
+    "response": {
+      "headers": {
+        "Host": "127.0.0.1:64496",
+        "Accept-Encoding": "identity",
+        "X-Custom-Ip": "198.51.100.2",
+        "X-Forwarded-For": "198.51.100.2",
+        "X-Forwarded-Host": "127.0.0.1:64496",
+        "X-Forwarded-Port": "64496",
+        "X-Forwarded-Proto": "http",
+        "X-Forwarded-Server": "halyard.int.oandc.fun",
+        "X-Real-Ip": "198.51.100.2",
+        "X-V0-After-Peer": "198.51.100.2:0",
+        "X-V0-Before": "{\"Peer\":\"127.0.0.1:64521\",\"Headers\":{\"Accept-Encoding\":[\"identity\"],\"X-Custom-Ip\":[\"198.51.100.2\"],\"X-Forwarded-Host\":[\"127.0.0.1:64496\"],\"X-Forwarded-Port\":[\"64496\"],\"X-Forwarded-Proto\":[\"http\"],\"X-Forwarded-Server\":[\"halyard.int.oandc.fun\"],\"X-Real-Ip\":[\"127.0.0.1\"]},\"TLS\":false,\"Proto\":\"HTTP/1.1\"}",
+        "X-V0-Selected": "X-Custom-Ip",
+        "X-V0-Tls-Preserved": "true"
+      },
+      "path": "/root-peer"
+    }
+  },
+  {
+    "case": "root-not-effective",
+    "passed": true,
+    "status": 404,
+    "response": "404 page not found\n"
+  },
+  {
+    "case": "child-sees-effective",
+    "passed": true,
+    "status": 200,
+    "response": {
+      "headers": {
+        "Host": "127.0.0.1:64496",
+        "Accept-Encoding": "identity",
+        "X-Custom-Ip": "198.51.100.2",
+        "X-Forwarded-For": "198.51.100.2",
+        "X-Forwarded-Host": "127.0.0.1:64496",
+        "X-Forwarded-Port": "64496",
+        "X-Forwarded-Proto": "http",
+        "X-Forwarded-Server": "halyard.int.oandc.fun",
+        "X-Real-Ip": "198.51.100.2",
+        "X-V0-After-Peer": "198.51.100.2:0",
+        "X-V0-Before": "{\"Peer\":\"127.0.0.1:64523\",\"Headers\":{\"Accept-Encoding\":[\"identity\"],\"X-Custom-Ip\":[\"198.51.100.2\"],\"X-Forwarded-Host\":[\"127.0.0.1:64496\"],\"X-Forwarded-Port\":[\"64496\"],\"X-Forwarded-Proto\":[\"http\"],\"X-Forwarded-Server\":[\"halyard.int.oandc.fun\"],\"X-Real-Ip\":[\"127.0.0.1\"]},\"TLS\":false,\"Proto\":\"HTTP/1.1\"}",
+        "X-V0-Selected": "X-Custom-Ip",
+        "X-V0-Tls-Preserved": "true"
+      },
+      "path": "/parent/child"
+    }
+  },
+  {
+    "case": "child-default-404",
+    "passed": true,
+    "status": 404,
+    "response": "404 page not found\n"
+  },
+  {
+    "case": "encoded-path-rejected",
+    "passed": true,
+    "status": 400,
+    "response": ""
+  },
+  {
+    "case": "internal-ping",
+    "passed": true,
+    "status": 200,
+    "response": "OK"
+  },
+  {
+    "case": "proxy-zero",
+    "passed": true,
+    "status": 200,
+    "response": {
+      "headers": {
+        "Host": "a.example",
+        "X-Forwarded-For": "0.0.0.0",
+        "X-Forwarded-Host": "a.example",
+        "X-Forwarded-Port": "80",
+        "X-Forwarded-Proto": "http",
+        "X-Forwarded-Server": "halyard.int.oandc.fun",
+        "X-Real-Ip": "0.0.0.0",
+        "X-V0-After-Peer": "0.0.0.0:0",
+        "X-V0-Before": "{\"Peer\":\"0.0.0.0:0\",\"Headers\":{\"X-Forwarded-Host\":[\"a.example\"],\"X-Forwarded-Port\":[\"80\"],\"X-Forwarded-Proto\":[\"http\"],\"X-Forwarded-Server\":[\"halyard.int.oandc.fun\"],\"X-Real-Ip\":[\"invalid\"]},\"TLS\":false,\"Proto\":\"HTTP/1.1\"}",
+        "X-V0-Selected": "peer",
+        "X-V0-Tls-Preserved": "true",
+        "Accept-Encoding": "gzip"
+      },
+      "path": "/covered/proxy-zero"
+    }
+  },
+  {
+    "case": "proxy-local",
+    "passed": true,
+    "status": 200,
+    "response": {
+      "headers": {
+        "Host": "a.example",
+        "X-Forwarded-For": "127.0.0.1",
+        "X-Forwarded-Host": "a.example",
+        "X-Forwarded-Port": "80",
+        "X-Forwarded-Proto": "http",
+        "X-Forwarded-Server": "halyard.int.oandc.fun",
+        "X-Real-Ip": "127.0.0.1",
+        "X-V0-After-Peer": "127.0.0.1:64528",
+        "X-V0-Before": "{\"Peer\":\"127.0.0.1:64528\",\"Headers\":{\"X-Forwarded-Host\":[\"a.example\"],\"X-Forwarded-Port\":[\"80\"],\"X-Forwarded-Proto\":[\"http\"],\"X-Forwarded-Server\":[\"halyard.int.oandc.fun\"],\"X-Real-Ip\":[\"invalid\"]},\"TLS\":false,\"Proto\":\"HTTP/1.1\"}",
+        "X-V0-Selected": "peer",
+        "X-V0-Tls-Preserved": "true",
+        "Accept-Encoding": "gzip"
+      },
+      "path": "/covered/proxy-local"
+    }
+  },
+  {
+    "case": "tls-state",
+    "passed": true,
+    "status": 200,
+    "response": {
+      "headers": {
+        "Host": "a.example",
+        "X-Forwarded-For": "127.0.0.1",
+        "X-Forwarded-Host": "a.example",
+        "X-Forwarded-Port": "443",
+        "X-Forwarded-Proto": "https",
+        "X-Forwarded-Server": "halyard.int.oandc.fun",
+        "X-Real-Ip": "127.0.0.1",
+        "X-V0-After-Peer": "127.0.0.1:64529",
+        "X-V0-Before": "{\"Peer\":\"127.0.0.1:64529\",\"Headers\":{\"X-Forwarded-Host\":[\"a.example\"],\"X-Forwarded-Port\":[\"443\"],\"X-Forwarded-Proto\":[\"https\"],\"X-Forwarded-Server\":[\"halyard.int.oandc.fun\"],\"X-Real-Ip\":[\"invalid\"]},\"TLS\":true,\"Proto\":\"HTTP/1.1\"}",
+        "X-V0-Selected": "peer",
+        "X-V0-Tls-Preserved": "true",
+        "Accept-Encoding": "gzip"
+      },
+      "path": "/covered/tls-state"
+    }
+  },
+  {
+    "case": "sni-rejection",
+    "passed": true,
+    "status": 421,
+    "response": "Misdirected Request\n"
+  },
+  {
+    "case": "http1-streaming",
+    "passed": true,
+    "firstBeforeRelease": "first\n",
+    "second": "second\n"
+  },
+  {
+    "case": "http2-streaming",
+    "passed": true,
+    "observation": {
+      "effective": "198.51.100.2",
+      "firstBeforeRelease": true,
+      "protocol": "HTTP/2.0",
+      "second": "second\n"
+    }
+  },
+  {
+    "case": "websocket-handshake-data",
+    "passed": true,
+    "status": 101,
+    "echo": "810976302d73747265616d"
+  },
+  {
+    "case": "log-mutated-header-original-core",
+    "passed": true
+  },
+  {
+    "case": "log-entrypoint-field",
+    "passed": true
+  },
+  {
+    "case": "child-404-ran-default",
+    "passed": true
+  },
+  {
+    "case": "unmatched-did-not-run",
+    "passed": true
+  },
+  {
+    "case": "internal-ran-default",
+    "passed": true
+  },
+  {
+    "case": "encoded-rejection-before-plugin",
+    "passed": true
+  },
+  {
+    "case": "sni-rejection-before-plugin",
+    "passed": true
+  }
+]

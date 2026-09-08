@@ -1,0 +1,843 @@
+[
+  {
+    "case": "baseline",
+    "supplied": {
+      "sources": [
+        {
+          "name": "probe",
+          "preset": "v0"
+        }
+      ]
+    },
+    "http_status": 200,
+    "new_receives": {
+      "decoded": {
+        "sources": [
+          {
+            "name": "probe",
+            "preset": "v0",
+            "trust": null,
+            "extract": null,
+            "scheme": null,
+            "unknown": null
+          }
+        ],
+        "feedCacheDir": null,
+        "unknown": null
+      },
+      "effective": {
+        "sources": [
+          {
+            "name": "probe",
+            "preset": "v0",
+            "trust": {
+              "static": [
+                "192.0.2.0/24"
+              ],
+              "feeds": null,
+              "headerIn": null,
+              "hostExact": null,
+              "hostSuffixes": null,
+              "unknown": null
+            },
+            "extract": {
+              "header": "X-Real-Ip",
+              "mode": "single",
+              "unknown": null
+            },
+            "scheme": {
+              "header": "X-Forwarded-Proto",
+              "mode": "single",
+              "unknown": null
+            },
+            "unknown": null
+          }
+        ],
+        "feedCacheDir": null,
+        "unknown": null
+      },
+      "inputUnchanged": true
+    },
+    "response_body": null,
+    "passed": true
+  },
+  {
+    "case": "replacement",
+    "supplied": {
+      "sources": [
+        {
+          "name": "probe",
+          "preset": "v0",
+          "trust": {
+            "static": [
+              "198.51.100.0/24"
+            ],
+            "headerIn": {
+              "name": "X-Zone",
+              "values": [
+                "yes"
+              ]
+            }
+          },
+          "scheme": {
+            "header": "X-Scheme",
+            "mode": "single"
+          }
+        }
+      ]
+    },
+    "http_status": 200,
+    "new_receives": {
+      "decoded": {
+        "sources": [
+          {
+            "name": "probe",
+            "preset": "v0",
+            "trust": {
+              "static": [
+                "198.51.100.0/24"
+              ],
+              "feeds": null,
+              "headerIn": {
+                "name": "X-Zone",
+                "values": [
+                  "yes"
+                ],
+                "unknown": null
+              },
+              "hostExact": null,
+              "hostSuffixes": null,
+              "unknown": null
+            },
+            "extract": null,
+            "scheme": {
+              "header": "X-Scheme",
+              "mode": "single",
+              "unknown": null
+            },
+            "unknown": null
+          }
+        ],
+        "feedCacheDir": null,
+        "unknown": null
+      },
+      "effective": {
+        "sources": [
+          {
+            "name": "probe",
+            "preset": "v0",
+            "trust": {
+              "static": [
+                "198.51.100.0/24"
+              ],
+              "feeds": null,
+              "headerIn": {
+                "name": "X-Zone",
+                "values": [
+                  "yes"
+                ],
+                "unknown": null
+              },
+              "hostExact": null,
+              "hostSuffixes": null,
+              "unknown": null
+            },
+            "extract": {
+              "header": "X-Real-Ip",
+              "mode": "single",
+              "unknown": null
+            },
+            "scheme": {
+              "header": "X-Scheme",
+              "mode": "single",
+              "unknown": null
+            },
+            "unknown": null
+          }
+        ],
+        "feedCacheDir": null,
+        "unknown": null
+      },
+      "inputUnchanged": true
+    },
+    "response_body": null,
+    "passed": true
+  },
+  {
+    "case": "null-inherits",
+    "supplied": {
+      "sources": [
+        {
+          "name": "probe",
+          "preset": "v0",
+          "scheme": null
+        }
+      ]
+    },
+    "http_status": 200,
+    "new_receives": {
+      "decoded": {
+        "sources": [
+          {
+            "name": "probe",
+            "preset": "v0",
+            "trust": null,
+            "extract": null,
+            "scheme": null,
+            "unknown": null
+          }
+        ],
+        "feedCacheDir": null,
+        "unknown": null
+      },
+      "effective": {
+        "sources": [
+          {
+            "name": "probe",
+            "preset": "v0",
+            "trust": {
+              "static": [
+                "192.0.2.0/24"
+              ],
+              "feeds": null,
+              "headerIn": null,
+              "hostExact": null,
+              "hostSuffixes": null,
+              "unknown": null
+            },
+            "extract": {
+              "header": "X-Real-Ip",
+              "mode": "single",
+              "unknown": null
+            },
+            "scheme": {
+              "header": "X-Forwarded-Proto",
+              "mode": "single",
+              "unknown": null
+            },
+            "unknown": null
+          }
+        ],
+        "feedCacheDir": null,
+        "unknown": null
+      },
+      "inputUnchanged": true
+    },
+    "response_body": null,
+    "passed": true
+  },
+  {
+    "case": "empty-feeds",
+    "supplied": {
+      "sources": [
+        {
+          "name": "probe",
+          "preset": "v0",
+          "trust": {
+            "feeds": []
+          }
+        }
+      ]
+    },
+    "http_status": 404,
+    "new_receives": null,
+    "response_body": "404 page not found\n",
+    "passed": true
+  },
+  {
+    "case": "unknown-extract-mode",
+    "supplied": {
+      "sources": [
+        {
+          "name": "probe",
+          "preset": "v0",
+          "extract": {
+            "header": "X-Real-Ip",
+            "mode": "invalid"
+          }
+        }
+      ]
+    },
+    "http_status": 404,
+    "new_receives": null,
+    "response_body": "404 page not found\n",
+    "passed": true
+  },
+  {
+    "case": "unknown-scheme-mode",
+    "supplied": {
+      "sources": [
+        {
+          "name": "probe",
+          "preset": "v0",
+          "scheme": {
+            "header": "X-Forwarded-Proto",
+            "mode": "invalid"
+          }
+        }
+      ]
+    },
+    "http_status": 404,
+    "new_receives": null,
+    "response_body": "404 page not found\n",
+    "passed": true
+  },
+  {
+    "case": "empty-static",
+    "supplied": {
+      "sources": [
+        {
+          "name": "probe",
+          "preset": "v0",
+          "trust": {
+            "static": []
+          }
+        }
+      ]
+    },
+    "http_status": 404,
+    "new_receives": null,
+    "response_body": "404 page not found\n",
+    "passed": true
+  },
+  {
+    "case": "empty-string-static",
+    "supplied": {
+      "sources": [
+        {
+          "name": "probe",
+          "preset": "v0",
+          "trust": {
+            "static": ""
+          }
+        }
+      ]
+    },
+    "http_status": 404,
+    "new_receives": null,
+    "response_body": "404 page not found\n",
+    "passed": true
+  },
+  {
+    "case": "empty-predicate-values",
+    "supplied": {
+      "sources": [
+        {
+          "name": "probe",
+          "preset": "v0",
+          "trust": {
+            "headerIn": {
+              "name": "X-Zone",
+              "values": []
+            }
+          }
+        }
+      ]
+    },
+    "http_status": 404,
+    "new_receives": null,
+    "response_body": "404 page not found\n",
+    "passed": true
+  },
+  {
+    "case": "empty-sources",
+    "supplied": {
+      "sources": []
+    },
+    "http_status": 404,
+    "new_receives": null,
+    "response_body": "404 page not found\n",
+    "passed": true
+  },
+  {
+    "case": "unknown-top",
+    "supplied": {
+      "sources": [
+        {
+          "name": "probe",
+          "preset": "v0"
+        }
+      ],
+      "allowPrivateClient": true
+    },
+    "http_status": 404,
+    "new_receives": null,
+    "response_body": "404 page not found\n",
+    "passed": true
+  },
+  {
+    "case": "unknown-nested",
+    "supplied": {
+      "sources": [
+        {
+          "name": "probe",
+          "preset": "v0",
+          "trust": {
+            "headerEquals": {
+              "value": "wrong"
+            }
+          }
+        }
+      ]
+    },
+    "http_status": 404,
+    "new_receives": null,
+    "response_body": "404 page not found\n",
+    "passed": true
+  },
+  {
+    "case": "unknown-preset",
+    "supplied": {
+      "sources": [
+        {
+          "name": "probe",
+          "preset": "not-v0"
+        }
+      ]
+    },
+    "http_status": 404,
+    "new_receives": null,
+    "response_body": "404 page not found\n",
+    "passed": true
+  },
+  {
+    "case": "decimal",
+    "supplied": {
+      "sources": [
+        {
+          "name": "probe",
+          "preset": "v0",
+          "trust": {
+            "feeds": [
+              {
+                "url": "https://example.invalid/feed",
+                "format": "lines",
+                "minEntries": "1",
+                "refreshInterval": "1s"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "http_status": 200,
+    "new_receives": {
+      "decoded": {
+        "sources": [
+          {
+            "name": "probe",
+            "preset": "v0",
+            "trust": {
+              "static": null,
+              "feeds": [
+                {
+                  "url": "https://example.invalid/feed",
+                  "format": "lines",
+                  "refreshInterval": "1s",
+                  "minEntries": "1",
+                  "unknown": null
+                }
+              ],
+              "headerIn": null,
+              "hostExact": null,
+              "hostSuffixes": null,
+              "unknown": null
+            },
+            "extract": null,
+            "scheme": null,
+            "unknown": null
+          }
+        ],
+        "feedCacheDir": null,
+        "unknown": null
+      },
+      "effective": {
+        "sources": [
+          {
+            "name": "probe",
+            "preset": "v0",
+            "trust": {
+              "static": [
+                "192.0.2.0/24"
+              ],
+              "feeds": [
+                {
+                  "url": "https://example.invalid/feed",
+                  "format": "lines",
+                  "refreshInterval": "1s",
+                  "minEntries": "1",
+                  "unknown": null
+                }
+              ],
+              "headerIn": null,
+              "hostExact": null,
+              "hostSuffixes": null,
+              "unknown": null
+            },
+            "extract": {
+              "header": "X-Real-Ip",
+              "mode": "single",
+              "unknown": null
+            },
+            "scheme": {
+              "header": "X-Forwarded-Proto",
+              "mode": "single",
+              "unknown": null
+            },
+            "unknown": null
+          }
+        ],
+        "feedCacheDir": null,
+        "unknown": null
+      },
+      "inputUnchanged": true
+    },
+    "response_body": null,
+    "passed": true
+  },
+  {
+    "case": "numeric",
+    "supplied": {
+      "sources": [
+        {
+          "name": "probe",
+          "preset": "v0",
+          "trust": {
+            "feeds": [
+              {
+                "url": "https://example.invalid/feed",
+                "format": "lines",
+                "minEntries": 1,
+                "refreshInterval": "1s"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "http_status": 200,
+    "new_receives": {
+      "decoded": {
+        "sources": [
+          {
+            "name": "probe",
+            "preset": "v0",
+            "trust": {
+              "static": null,
+              "feeds": [
+                {
+                  "url": "https://example.invalid/feed",
+                  "format": "lines",
+                  "refreshInterval": "1s",
+                  "minEntries": "1",
+                  "unknown": null
+                }
+              ],
+              "headerIn": null,
+              "hostExact": null,
+              "hostSuffixes": null,
+              "unknown": null
+            },
+            "extract": null,
+            "scheme": null,
+            "unknown": null
+          }
+        ],
+        "feedCacheDir": null,
+        "unknown": null
+      },
+      "effective": {
+        "sources": [
+          {
+            "name": "probe",
+            "preset": "v0",
+            "trust": {
+              "static": [
+                "192.0.2.0/24"
+              ],
+              "feeds": [
+                {
+                  "url": "https://example.invalid/feed",
+                  "format": "lines",
+                  "refreshInterval": "1s",
+                  "minEntries": "1",
+                  "unknown": null
+                }
+              ],
+              "headerIn": null,
+              "hostExact": null,
+              "hostSuffixes": null,
+              "unknown": null
+            },
+            "extract": {
+              "header": "X-Real-Ip",
+              "mode": "single",
+              "unknown": null
+            },
+            "scheme": {
+              "header": "X-Forwarded-Proto",
+              "mode": "single",
+              "unknown": null
+            },
+            "unknown": null
+          }
+        ],
+        "feedCacheDir": null,
+        "unknown": null
+      },
+      "inputUnchanged": true
+    },
+    "response_body": null,
+    "passed": true
+  },
+  {
+    "case": "fraction",
+    "supplied": {
+      "sources": [
+        {
+          "name": "probe",
+          "preset": "v0",
+          "trust": {
+            "feeds": [
+              {
+                "url": "https://example.invalid/feed",
+                "format": "lines",
+                "minEntries": 1.5,
+                "refreshInterval": "1s"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "http_status": 404,
+    "new_receives": null,
+    "response_body": "404 page not found\n",
+    "passed": true
+  },
+  {
+    "case": "signed",
+    "supplied": {
+      "sources": [
+        {
+          "name": "probe",
+          "preset": "v0",
+          "trust": {
+            "feeds": [
+              {
+                "url": "https://example.invalid/feed",
+                "format": "lines",
+                "minEntries": "+1",
+                "refreshInterval": "1s"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "http_status": 404,
+    "new_receives": null,
+    "response_body": "404 page not found\n",
+    "passed": true
+  },
+  {
+    "case": "spaces",
+    "supplied": {
+      "sources": [
+        {
+          "name": "probe",
+          "preset": "v0",
+          "trust": {
+            "feeds": [
+              {
+                "url": "https://example.invalid/feed",
+                "format": "lines",
+                "minEntries": " 1",
+                "refreshInterval": "1s"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "http_status": 404,
+    "new_receives": null,
+    "response_body": "404 page not found\n",
+    "passed": true
+  },
+  {
+    "case": "exponent",
+    "supplied": {
+      "sources": [
+        {
+          "name": "probe",
+          "preset": "v0",
+          "trust": {
+            "feeds": [
+              {
+                "url": "https://example.invalid/feed",
+                "format": "lines",
+                "minEntries": "1e2",
+                "refreshInterval": "1s"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "http_status": 404,
+    "new_receives": null,
+    "response_body": "404 page not found\n",
+    "passed": true
+  },
+  {
+    "case": "overflow",
+    "supplied": {
+      "sources": [
+        {
+          "name": "probe",
+          "preset": "v0",
+          "trust": {
+            "feeds": [
+              {
+                "url": "https://example.invalid/feed",
+                "format": "lines",
+                "minEntries": "18446744073709551616",
+                "refreshInterval": "1s"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "http_status": 404,
+    "new_receives": null,
+    "response_body": "404 page not found\n",
+    "passed": true
+  },
+  {
+    "case": "range",
+    "supplied": {
+      "sources": [
+        {
+          "name": "probe",
+          "preset": "v0",
+          "trust": {
+            "feeds": [
+              {
+                "url": "https://example.invalid/feed",
+                "format": "lines",
+                "minEntries": "100001",
+                "refreshInterval": "1s"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "http_status": 404,
+    "new_receives": null,
+    "response_body": "404 page not found\n",
+    "passed": true
+  },
+  {
+    "case": "zero",
+    "supplied": {
+      "sources": [
+        {
+          "name": "probe",
+          "preset": "v0",
+          "trust": {
+            "feeds": [
+              {
+                "url": "https://example.invalid/feed",
+                "format": "lines",
+                "minEntries": "0",
+                "refreshInterval": "1s"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "http_status": 404,
+    "new_receives": null,
+    "response_body": "404 page not found\n",
+    "passed": true
+  },
+  {
+    "case": "invalid-duration",
+    "supplied": {
+      "sources": [
+        {
+          "name": "probe",
+          "preset": "v0",
+          "trust": {
+            "feeds": [
+              {
+                "url": "https://example.invalid/feed",
+                "format": "lines",
+                "minEntries": "1",
+                "refreshInterval": "fast"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "http_status": 404,
+    "new_receives": null,
+    "response_body": "404 page not found\n",
+    "passed": true
+  },
+  {
+    "case": "numeric-duration",
+    "supplied": {
+      "sources": [
+        {
+          "name": "probe",
+          "preset": "v0",
+          "trust": {
+            "feeds": [
+              {
+                "url": "https://example.invalid/feed",
+                "format": "lines",
+                "minEntries": "1",
+                "refreshInterval": 2
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "http_status": 404,
+    "new_receives": null,
+    "response_body": "404 page not found\n",
+    "passed": true
+  },
+  {
+    "case": "short-duration",
+    "supplied": {
+      "sources": [
+        {
+          "name": "probe",
+          "preset": "v0",
+          "trust": {
+            "feeds": [
+              {
+                "url": "https://example.invalid/feed",
+                "format": "lines",
+                "minEntries": "1",
+                "refreshInterval": "500ms"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    "http_status": 404,
+    "new_receives": null,
+    "response_body": "404 page not found\n",
+    "passed": true
+  }
+]

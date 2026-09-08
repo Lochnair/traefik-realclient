@@ -1,0 +1,5 @@
+Version:      3.7.12
+Codename:     langres
+Go version:   go1.26.7
+Built:        2026-08-26T13:34:13Z
+OS/Arch:      darwin/arm64

@@ -1,0 +1,35 @@
+{
+  "traefik": "3.7.12",
+  "yaegi": "0.16.1",
+  "binaryGo": "1.26.7",
+  "nativeGo": "1.27.0 darwin/arm64",
+  "probeModuleGo": "1.22",
+  "passingAssertions": {
+    "config": 25,
+    "providers": 8,
+    "runtime": 33
+  },
+  "primitiveRouters": 2,
+  "interpretedConcurrentNewPerResponse": 8,
+  "nativeRace": {
+    "cwd": "tests/v0/primitives-plugin",
+    "command": "go test -race ./...",
+    "exitCode": 0,
+    "stdout": "ok  example.com/realclientv0 1.657s"
+  },
+  "stdversion": {
+    "command": "go vet -stdversion ./...",
+    "modules": [
+      "tests/v0/primitives-plugin",
+      "tests/v0/config-plugin",
+      "tests/v0/runtime-plugin"
+    ],
+    "exitCodes": [
+      0,
+      0,
+      0
+    ]
+  },
+  "pythonSyntax": "all harnesses parsed successfully",
+  "cleanup": "No running containers matched label realclient.v0 after provider probes"
+}

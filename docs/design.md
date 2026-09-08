@@ -1,6 +1,15 @@
 # traefik-realclient — design and implementation plan
 
-**Revision:** 2026-09-08. **Status:** planning; no middleware implementation.
+**Revision:** 2026-09-08. **Status:** core V0 feasibility probes complete; V1 not implemented.
+
+> **V0 configuration decision (2026-09-08):** The typed-adapter findings are
+> accepted. §3 now validates the decoded configuration visible through Traefik
+> 3.7.12 / Yaegi 0.16.1, using typed external structs and recursive `,remain`
+> maps. Null has omission semantics; empty containers cannot clear preset
+> members. The configuration blocker is resolved; core V0 checks are complete.
+> V1 remains gated on review of the completed V0 findings. See
+> [configuration evidence](v0-typed-adapter-findings.md) and
+> [core V0 findings](v0-core-findings.md).
 
 > Determine the effective client IP behind configurable trusted upstreams as accurately and
 > generically as practical, then normalize the request so downstream middleware can consume
@@ -172,7 +181,7 @@ http:
 ```
 
 Top-level fields are `sources` (ordered list, default empty) and `feedCacheDir` (default empty,
-disabling persistence). An empty source list is useful as a peer-only normalizer.
+disabling persistence). Omitting sources selects peer-only normalization. An explicitly supplied empty source list is invalid.
 
 Source fields are `name`, `preset`, `trust`, `extract`, and optional `scheme`.
 Names are nonempty and unique within an instance. No automatic name or preset is inferred.
@@ -181,56 +190,90 @@ Every expanded source needs at least one effective trust predicate and a complet
 
 ### 3.2 Deterministic preset overlay
 
-Only this documented overlay exists; there is no general deep merge:
+Overlay is monotonic in member presence: omitted values inherit the preset, and
+explicit valid non-empty values replace/add only according to these field rules.
+This does not imply that replacing a list preserves every address in the old list.
+There is no general deep merge or mechanism for clearing an inherited member.
 
 - Copy the preset into independent instance-owned data.
-- Within `trust`, each explicitly supplied predicate replaces that entire predicate; omitted
-  predicates retain the preset's value. The peer family has two separately replaceable list
-  fields, `static` and `feeds`.
-- Lists replace, never append. An explicit empty `static` or `feeds` list clears that list.
-- `extract` and `scheme`, when supplied, replace their entire objects. `scheme: {}` disables
-  source scheme extraction. A nonempty scheme object must be complete.
-- `trust: {}` adds/overrides nothing; it does not clear inherited predicates. To discard a
-  preset's provenance assumptions altogether, write a source without `preset`.
-- An explicitly empty header predicate is invalid, not an instruction to disable it.
-- Explicit null values are invalid everywhere. Validate the final expanded source.
+- Within `trust`, each supplied complete predicate replaces that entire predicate;
+  omitted predicates inherit. `static` and `feeds` are separately replaceable lists.
+- Supplied lists replace, never append, and must be non-empty. Empty `static`,
+  `feeds`, predicate-value, source, and similar configuration lists are invalid.
+- Supplied `extract` and `scheme` replace their entire objects and must be complete.
+  `scheme: {}` is not a disable operation. Empty trust objects have no supported
+  special meaning; Traefik may reject empty objects before `New` is called.
+- Null is indistinguishable from omission and has omission semantics. The adapter
+  may reject a containing empty object after dropping its null members.
+- Validate supplied decoded values and the final expanded source. To remove or
+  substantially alter preset-supplied fields, configure the source explicitly
+  without a preset. There is no empty-container reset syntax.
 
-Thus `preset: bunny` plus `trust.headerIn` retains Bunny's feeds and adds one AND condition.
-An inline list of feeds replaces the preset list in full, including its IPv6 member. Operators
-must supply both if both are wanted.
-Clearing feeds while retaining only header predicates removes peer-address anchoring. This is
-legal but requires an independent provenance guarantee; see §3.4's construction diagnostic.
+Thus `preset: bunny` plus `trust.headerIn` retains Bunny's feeds and adds one AND
+condition. A non-empty inline feed list replaces the preset list in full, including
+its IPv6 member; operators must supply both if both are wanted. Header-only trust
+remains legal for an explicit source without a preset, subject to §3.4's diagnostic.
 
-### 3.3 Strict decoding at the plugin boundary
+### 3.3 Strict validation at the decoded plugin boundary
 
-Traefik's mapstructure adapter uses weak conversion and does not reject unused keys. Ordinary
-typed structs with ignored unknown fields are insufficient for this configuration.
+Use typed external configuration structs returned by `CreateConfig`, with
+`map[string]any` fields tagged `mapstructure:",remain"` at every struct level
+requiring unknown-field rejection, including source/feed elements and predicate,
+extraction and scheme objects. Use pointers and containers to represent the
+presence distinctions the adapter actually preserves. Ordinary typed structs
+that silently discard unknown fields are insufficient.
 
-Plan a raw map-based external config returned by `CreateConfig`, followed by explicit recursive
-validation and conversion into typed, immutable internal settings in `New`. Treat the supplied
-map and everything reachable from it as shared, read-only data: the adapter can retain references
-to Traefik's runtime configuration. Build independent internal
-settings, deep-copying any intermediate data that must be transformed; never overlay in place.
-The Yaegi spike must verify this exact boundary with Traefik's adapter. Preserve unknown keys and
-original scalar types until validation; do not silently coerce numeric identifiers, booleans, or lists. If a
-provider has already converted a value to a string, original file bytes cannot be reconstructed.
+Treat configuration passed to `New` and everything reachable from it as borrowed,
+read-only data. Construct independent immutable internal settings, deep-copying
+intermediate data that must be transformed; never overlay in place. Validate the
+whole decoded instance before acquiring or starting any new feed workers.
 
-Validate field names against the exact documented spelling, including nested maps and list
-elements. Reject unknown keys, unknown presets/modes, unsupported versioned fields, nulls,
-incorrect scalar/list shapes, empty required strings, and invalid header names. A v1 config
-containing `headerEquals` must fail clearly, not silently become feed-only trust.
+Validation is strict over the **decoded configuration visible to the plugin**,
+not original YAML/provider distinctions already erased or converted by Traefik.
+Reject every entry retained in a `,remain` map, recursively. Reject unknown
+presets/modes, unsupported versioned fields, empty required strings, invalid
+header names, invalid decoded values and supplied empty lists. Documented spelling
+is the configuration syntax; spelling/type distinctions consumed by the adapter
+cannot be reconstructed or independently rejected by plugin validation. A retained
+`headerEquals` key must fail clearly, not silently become feed-only trust.
 
-Durations are strings parsed explicitly with `time.ParseDuration`, positive and at least one
-second; there is no assumed mapstructure duration hook. Numeric durations are invalid. The
-documented YAML lists remain lists. Integer fields such as `minEntries` accept either an integral
-numeric value or an ASCII decimal digit string, checked for range before conversion; reject
-non-finite/fractional numbers, signed or whitespace-padded strings, exponent strings and overflow. This is field-specific:
-identifiers and durations must remain strings, and arbitrary strings never become lists.
-V0 must test file and label/KV provider representations through the actual adapter, including
-indexed source/feed lists and empty-list overlays. Support is limited to providers that preserve
-these documented shapes; publish tested syntax and explicit limitations before claiming support.
-Do not silently relax validation to accommodate a provider. Boolean coercion is not needed by
-the v1 schema.
+Explicit null is indistinguishable from omission and therefore has omission
+semantics. Realclient does not claim to detect or reject original explicit nulls.
+The tested file provider can erase null members and turn a now-empty containing
+object into a string, which can itself cause an adapter construction failure.
+
+The 23-case Traefik 3.7.12 / Yaegi 0.16.1 probe demonstrated:
+
+- `static: []` and `static: ""` both become a pointer to an empty string slice.
+  Both are invalid under decoded non-empty-list validation. Empty `feeds` and
+  `sources` likewise decode to empty lists, distinct from omitted lists.
+- `trust: {}` and `scheme: {}` become strings before typed decoding and fail
+  with “expected a map, got string”; neither is a control operation.
+- `scheme: null` and omitted scheme reach `New` identically.
+- `,remain` captures surviving unknown keys at every tested struct level.
+
+The earlier raw observation also showed numeric and boolean file-provider values
+becoming strings. Do not promise rejection of an original scalar/list shape if
+Traefik has already converted it into a valid decoded value. No additional
+plugin-owned weak conversion is implied by accepting the adapter's output.
+See [exact typed-adapter observations](v0-typed-adapter-findings.md).
+
+Parse decoded duration strings explicitly with `time.ParseDuration`; require
+positive values of at least one second. There is no assumed duration hook.
+Integer fields such as `minEntries` accept a decoded integral numeric value or
+ASCII decimal digit string, checked for range before conversion. Reject decoded
+non-finite/fractional numbers, signed/whitespace-padded/exponent strings and
+overflow. Identifier comparison uses the decoded string exactly, including
+leading zeros when preserved. These rules do not recover original file types.
+
+V0 must test file and label/KV forms through the actual adapter, including indexed
+source/feed lists, decimal minEntries strings and invalid decoded forms. Publish
+only provider syntax actually demonstrated, with explicit conversion limitations;
+no universal provider-support claim follows from the file-provider probe.
+Core V0 additionally demonstrated Docker bracket/dot indices and Redis slash/numeric
+indices for source/feed lists. Docker empty strings decoded to rejected empty lists;
+Redis zero-length values disappeared and therefore inherited as omission. This is
+not a clearing operation. See [tested syntax and limits](v0-core-findings.md).
 
 V1 has no `allowPrivateClient`, `setRealIP`, `onTrustedButInvalid`, or configurable rejection
 status. These old fields are rejected as unknown with migration guidance.
@@ -257,10 +300,10 @@ provenance. A public client can otherwise send a matching value.
 Emit a construction-time warning naming each source without a peer-address predicate, without
 logging predicate values. No extra acknowledgement flag or mandatory peer anchor is imposed.
 
-Empty static/feed lists contribute nothing. The peer-address predicate exists only if at least
-one static entry or feed specification remains after overlay; an unavailable configured feed
-still counts as configured, but its current set is empty. If clearing lists leaves no effective
-predicate of any kind, reject the source at construction rather than treating empty trust as true.
+Supplied empty static/feed lists are invalid. The peer-address predicate exists when a
+non-empty static or feed list is configured after overlay; an unavailable configured feed
+still counts as configured even though its current address set is empty. Reject a source
+with no effective predicate rather than treating absent trust as true.
 
 No provider/domain blacklist is built into generic hostname validation. A suffix is a namespace
 selection rule, not evidence of ownership. Public-ingress Bunny guidance is in §7.
@@ -818,12 +861,13 @@ does not need that distinction, and the logs cannot reliably infer every upstrea
 
 ## 9. Validation plan and release boundaries
 
-No tests or implementation are added by this design revision.
+V0 probes and captured evidence are under `tests/v0/`; see [core V0 findings](v0-core-findings.md).
+No V1 implementation has been added. The V1 items below remain future implementation tests.
 
 ### V0 — feasibility and contract tests, before committing to implementation details
 
 - Load a minimal plugin through the intended Traefik release/Yaegi runtime and actual config
-  adapter. Exercise raw-map validation, nested lists, unsupported fields, durations, preset
+  adapter. Exercise typed decoded-value validation and recursive `,remain` rejection, nested lists, unsupported fields, durations, preset
   overlay, netip map keys, atomic.Value, goroutines and concurrent construction.
   Test two routers using the same middleware, including concurrent/repeated construction:
   deep-compare the original nested config before and after, and verify independent results.
@@ -866,7 +910,7 @@ Native unit and integration tests must cover:
   Confirm Traefik's delete alias posture blocks dotted aliases; document the unsupported keep
   posture with a backend that maps punctuation to CGI-style names. Duplicate extraction-header
   tests use X-Real-Ip/custom inputs; separate tests assert Traefik's XFF instance joining.
-- Exact identifiers without numeric coercion; actual wire whitespace handling; hostname label
+- Exact decoded identifiers with documented adapter conversions; actual wire whitespace handling; hostname label
   boundaries, trailing dot plus port, invalid ports/IDNs/IP literals, duplicate host predicates.
 - Scheme independent of IP: TLS and non-TLS origin crossed with HTTP and HTTPS original scheme;
   absent/invalid/duplicate/mixed/uniform-list metadata; actual WebSocket versus other upgrades.
@@ -1001,7 +1045,7 @@ review and counter-review; its decisions supersede earlier dispositions where ex
 | 1. Header presence is not execution proof | **Accepted; remedy changed.** Remove the old three-way classifier. Optional log integration uses explicit coverage and conservative early-status exclusions; no core marker mechanism. |
 | 2. Traefik synthesizes missing Bunny identity | **Accepted; policy changed.** Equal-to-peer identity is valid best effort, not an HTTP error. Document inability to distinguish synthesis. |
 | 3. Overlapping sources conflict | **Accepted.** First full predicate match plus successful extraction wins; every failure permits later sources. |
-| 4. Decoder and preset hardening loss | **Accepted.** Strict raw boundary, limited explicit overlay, whole-list replacement, explicit duration parsing and unsupported-field errors. |
+| 4. Decoder and preset hardening loss | **Updated after V0.** Typed decoded-value boundary with recursive `,remain`, monotonic member overlay, non-empty list replacement, explicit duration parsing and unsupported-field errors. |
 | 5. Worker policy/lifecycle ambiguity | **Accepted; simplified.** Immutable full-spec keys, per-interpreter sharing and intentional background lifetime. No live policy merging or refcounting. |
 | 6. Late CrowdSec override | **Accepted for optional integration.** One replacement s01 parser attributes before s02; no after-the-fact source_ip patch. |
 | 7. Partial feeds/POP attribution | **Accepted as inherent information loss.** Use available unions and peer fallback; readiness denial and a mandatory CDN whitelist are rejected as core requirements. |
@@ -1035,7 +1079,7 @@ corrections; planned integration behavior still requires §9's runtime tests.
 | 3. Parseable prohibited peers | **Accepted with corrected evidence.** Separate peer fallback from extracted-identity restrictions. PROXY LOCAL retains the real peer; it is not the advertised-zero-address case. |
 | 4. Synthesized identity pre-emption | **Accepted as an ordering warning.** Keep first-success selection. Supplied invalid values can still fail; scheme does not select IP sources. Reject special equal-to-peer continuation, which could override a legitimate preferred source. |
 | 5. Log coverage discriminator | **Accepted with qualification.** Explicit covered entrypoints supplement RouterName and exclusions. Internal routers are included. Entrypoint identity alone is not execution proof. |
-| 6. Clearing feeds removes anchoring | **Accepted as guidance/diagnostics.** Warn for effective header-only trust; no mandatory acknowledgement flag or peer anchor. |
+| 6. Clearing feeds removes anchoring | **Superseded after V0.** No preset clearing operation. Explicit sources may use header-only trust with a warning; no mandatory acknowledgement flag or peer anchor. |
 | 7. Provider count floors | **Accepted; failure account corrected.** Presets use minimum one. Rejected updates retain existing valid LKG/cache and do not invalidate independent feeds. A minimum of five accepts five. |
 | 8. Conditional-request evidence | **Clarified.** Observing an ETag did not prove 304 support. Claude reported conditional requests returning 200; that probe was not repeated here and does not replace retained measurements. Keep generic ETag support and controlled-server tests. |
 | 9. Cache trust boundary | **Accepted.** Protect cache files, directory and parent path from untrusted writers; cache syntax validation does not authenticate provenance. |
@@ -1046,7 +1090,7 @@ corrections; planned integration behavior still requires §9's runtime tests.
 | 14. Scheme aliases | **Accepted.** Publish both aliases consistently with canonical XFP rather than disabling consumers of those headers. |
 | 15. Additional identity channels | **Partially accepted.** Add the three IP headers. Preserve delegated XFCC by default: certificate-assertion policy is outside generic IP normalization. |
 | 16. Yaegi API limits | **Accepted; CI remedy corrected.** Actual exported symbols/language support govern compatibility. A language-version flag alone does not limit newer stdlib APIs; retain interpreter tests plus minimum-toolchain/stdversion checks. |
-| 17. Label/KV decoding | **Accepted as a contract gap.** Define field-specific decimal integer strings, preserve list/identifier strictness and verify provider syntax in V0. Do not claim all label/KV configurations are necessarily unsupported. |
+| 17. Label/KV decoding | **Accepted as a contract gap.** Define field-specific decimal integer strings, validate decoded lists/identifiers and verify provider syntax in V0. Do not claim all label/KV configurations are necessarily unsupported. |
 | 18. Cloudflare scheme evidence | **Rejected.** The provider explicitly documents overwriting client XFP. Keep the default and the existing input-preservation caveat; live measurement is corroboration, not required to accept the published contract. |
 | 19. Authority parsers | **Accepted as simplification.** Share splitting, retain distinct hostname versus forwarding-output validation. Different acceptance policies were not themselves a bug. |
 | 20. Falsification tests | **Accepted with corrected expectations.** Add shared-input, Connection, ordering, PROXY, coverage and backend tests. Assert retained LKG and the documented alias posture, not the review's incorrect failure expectations. |
