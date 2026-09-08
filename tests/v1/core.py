@@ -35,7 +35,9 @@ def build_static(root, backend_port, ports, cert, key):
         "stock": ep("stock", secure=False),
         "tls": ep("tls", secure=False),
         "place": ep("place", secure=False),
+        "multi": ep("multi", secure=False),
     }
+    entrypoints["multi"]["http"]["middlewares"] = ["realclient-multi@file"]
     entrypoints["place"]["http"]["encodedCharacters"] = {"allowEncodedSlash": False}
     source = {
         "name": "edge",
@@ -43,10 +45,19 @@ def build_static(root, backend_port, ports, cert, key):
         "extract": {"header": "X-Real-Ip", "mode": "single"},
         "scheme": {"header": "X-Forwarded-Proto", "mode": "single"},
     }
+    # Two-source instance: a header-selected source that usually does not match,
+    # ahead of the broad edge source, to exercise cross-source input deletion.
+    multi = [
+        {"name": "zoned", "trust": {"static": ["127.0.0.1/32"],
+                                    "headerIn": {"name": "X-Zone", "values": ["z1"]}},
+         "extract": {"header": "X-Zone-Client", "mode": "single"}},
+        source,
+    ]
     dynamic = {
         "http": {
             "routers": {
                 "plugin": {"rule": "PathPrefix(`/`)", "entryPoints": ["plugin"], "service": "echo"},
+                "multi": {"rule": "PathPrefix(`/`)", "entryPoints": ["multi"], "service": "echo"},
                 "secure": {"rule": "PathPrefix(`/`)", "entryPoints": ["secure"], "service": "echo"},
                 "stock": {"rule": "PathPrefix(`/`)", "entryPoints": ["stock"], "service": "echo"},
                 "tls": {"rule": "Host(`origin.test`)", "entryPoints": ["tls"], "service": "echo",
@@ -59,7 +70,10 @@ def build_static(root, backend_port, ports, cert, key):
                 "child": {"rule": "Path(`/parent/child`) && ClientIP(`198.51.100.2/32`)",
                           "parentRefs": ["parent"], "service": "echo"},
             },
-            "middlewares": {"realclient": {"plugin": {"realclient": {"sources": [source]}}}},
+            "middlewares": {
+                "realclient": {"plugin": {"realclient": {"sources": [source]}}},
+                "realclient-multi": {"plugin": {"realclient": {"sources": multi}}},
+            },
             "services": {"echo": {"loadBalancer": {"servers": [{"url": f"http://127.0.0.1:{backend_port}"}]}}},
         },
         "tls": {"certificates": [{"certFile": cert, "keyFile": key}]},
@@ -123,7 +137,7 @@ def run(binary, output):
             root = pathlib.Path(tmp)
             harness.stage_plugin(root)
             cert, key = harness.self_signed(root)
-            ports = {n: harness.freeport() for n in ["plugin", "secure", "stock", "tls", "place"]}
+            ports = {n: harness.freeport() for n in ["plugin", "secure", "stock", "tls", "place", "multi"]}
             static = build_static(root, backend.server_port, ports, cert, key)
             ready = f"http://127.0.0.1:{ports['plugin']}/__up"
             with harness.traefik(binary, root, static, output, ready):
@@ -329,6 +343,35 @@ def run(binary, output):
                                first=first.decode(), second=second.decode(),
                                effective=r.getheader("X-Effective"), xff=r.getheader("X-Fwd-For"))
                 conn.close()
+
+                # 19. two-source instance: the unselected source's extraction header
+                #     is still swept, and a duplicate extraction header is unusable.
+                M = ports["multi"]
+                st, _, body = req(M, "/hello", {"X-Real-Ip": "198.51.100.61",
+                                                "X-Zone-Client": "203.0.113.61"})
+                o = observed(body)
+                results.record("multi-source-unselected-header-swept",
+                               one(o["h"], "X-Real-Ip") == "198.51.100.61" and "x-zone-client" not in o["h"],
+                               x_real_ip=o["h"].get("x-real-ip"), leftover=o["h"].get("x-zone-client"))
+
+                st, _, body = req(M, "/hello", {"X-Zone": "z1", "X-Zone-Client": "203.0.113.62",
+                                                "X-Real-Ip": "198.51.100.62"})
+                o = observed(body)
+                results.record("multi-source-header-selected-source-wins",
+                               one(o["h"], "X-Real-Ip") == "203.0.113.62" and "x-zone-client" not in o["h"],
+                               x_real_ip=o["h"].get("x-real-ip"))
+
+                conn = http.client.HTTPConnection("127.0.0.1", P, timeout=5)
+                conn.putrequest("GET", "/hello", skip_host=True)
+                conn.putheader("Host", "x")
+                conn.putheader("X-Real-Ip", "198.51.100.71")
+                conn.putheader("X-Real-Ip", "198.51.100.72")
+                conn.endheaders()
+                r2 = conn.getresponse()
+                o = observed(r2.read().decode())
+                conn.close()
+                results.record("duplicate-extraction-header-peer-fallback",
+                               one(o["h"], "X-Real-Ip") == "127.0.0.1", got=o["h"].get("x-real-ip"))
         return results.finish()
     finally:
         backend.shutdown()
