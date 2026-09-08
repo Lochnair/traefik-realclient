@@ -73,6 +73,12 @@ Entrypoint defaults are prepended to root routers. A root's middleware chain wra
 router muxer, so children and the child muxer's 404 inherit that execution. Do not attach a second
 Realclient instance to children: after the first rewrite, `RemoteAddr` no longer identifies the
 upstream peer. Duplicate placement is unsupported, not a mechanism for deeper chain walking.
+A second instance can lose source scheme metadata and fall back to peer TLS; with different
+sources it may also change identity again. Do not assume idempotence.
+
+Defaults also apply to internal root routers on those entrypoints, including API, dashboard,
+ping and ACME HTTP routers where configured. A middleware construction failure can make those
+routers unavailable too. Internal traffic is not an automatic exception to deployment coverage.
 
 This is first **configured middleware**, not first request processing:
 
@@ -100,6 +106,14 @@ Deployment choices:
 | Secure entrypoint with no native trusted ranges | Non-managed authoritative header; Bunny needs an origin rule copying the client identity to one | A missing custom header leads to peer fallback. Cloudflare's normal `CF-Connecting-IP` needs no renaming. |
 | Secure entrypoint with native `trustedIPs` | Managed headers from those native trusted peers | Supported, but the address list is static and requires restart to change. |
 
+In either posture, Traefik removes non-managed headers named by `Connection` before plugins run.
+Preserve required identity, scheme and selector inputs by ensuring the upstream normalizes
+`Connection`, or listing those names in the entrypoint's `forwardedHeaders.connection` allowlist.
+Allowlisted nominated headers survive the middleware chain but remain nominated for hop-by-hop
+removal before the backend; allowlisting is not an authenticity guarantee. Cloudflare documents
+Connection normalization; the tested Bunny path has not established this behavior. Test custom
+proxies explicitly. Deleting a selector can cause another source to win, not just peer fallback.
+
 A separate ingress port is also a legitimate deployment choice, not inherently a fail-open bug.
 Choose based on topology and operational cost. Realclient does not enforce or discover the static
 entrypoint posture. There is no `entrypointForwardedHeaders` plugin flag in v1: the same explicit
@@ -108,11 +122,18 @@ normalization runs in every posture, eliminating two divergent sanitization path
 There are two unavoidable ambiguities:
 
 - An absent/empty incoming `X-Real-Ip` can arrive at Realclient as the peer because Traefik filled
-  it. Accepting that valid value gives the same effective IP as fallback. Do not reject equality
-  with the peer or claim to distinguish synthesis from a legitimate equal-address identity.
+  it. Accepting that valid value selects the source and stops the search, even when a later
+  source could supply a more informative IP. Put broad fallback sources after those sources.
+  Do not reject equality with the peer or continue specially on equality: a legitimate equal
+  identity and that source's scheme metadata still have the configured precedence. Supplied
+  malformed or duplicate X-Real-Ip values can still fail extraction.
 - Traefik can similarly synthesize a missing `X-Forwarded-Proto`. A trusted source using this
   managed header cannot distinguish synthesis from supplied metadata. Use a provider-controlled
   non-managed header if distinguishing absence is required.
+
+Traefik also fills empty forwarded host/port, overwrites X-Forwarded-Server, joins multiple XFF
+instances, and synthesizes `ws`/`wss` for WebSocket upgrades. Extraction and cardinality tests
+must exercise what reaches the plugin, not assume the original wire representation survives.
 
 The insecure setting is useful for stock Bunny, but optional log detection must follow §8 rather
 than blindly consuming the stock CrowdSec `ClientHost` attribution.
@@ -177,6 +198,8 @@ Only this documented overlay exists; there is no general deep merge:
 Thus `preset: bunny` plus `trust.headerIn` retains Bunny's feeds and adds one AND condition.
 An inline list of feeds replaces the preset list in full, including its IPv6 member. Operators
 must supply both if both are wanted.
+Clearing feeds while retaining only header predicates removes peer-address anchoring. This is
+legal but requires an independent provenance guarantee; see §3.4's construction diagnostic.
 
 ### 3.3 Strict decoding at the plugin boundary
 
@@ -184,9 +207,12 @@ Traefik's mapstructure adapter uses weak conversion and does not reject unused k
 typed structs with ignored unknown fields are insufficient for this configuration.
 
 Plan a raw map-based external config returned by `CreateConfig`, followed by explicit recursive
-validation and conversion into typed, immutable internal settings in `New`. The Yaegi spike
-must verify this exact boundary with Traefik's adapter. Preserve unknown keys and original scalar
-types until validation; do not silently coerce numeric identifiers, booleans, or lists. If a
+validation and conversion into typed, immutable internal settings in `New`. Treat the supplied
+map and everything reachable from it as shared, read-only data: the adapter can retain references
+to Traefik's runtime configuration. Build independent internal
+settings, deep-copying any intermediate data that must be transformed; never overlay in place.
+The Yaegi spike must verify this exact boundary with Traefik's adapter. Preserve unknown keys and
+original scalar types until validation; do not silently coerce numeric identifiers, booleans, or lists. If a
 provider has already converted a value to a string, original file bytes cannot be reconstructed.
 
 Validate field names against the exact documented spelling, including nested maps and list
@@ -196,8 +222,15 @@ containing `headerEquals` must fail clearly, not silently become feed-only trust
 
 Durations are strings parsed explicitly with `time.ParseDuration`, positive and at least one
 second; there is no assumed mapstructure duration hook. Numeric durations are invalid. The
-documented YAML lists remain lists; label-provider compatibility needs an actual decoding test,
-not a promise that arbitrary comma-separated strings are equivalent.
+documented YAML lists remain lists. Integer fields such as `minEntries` accept either an integral
+numeric value or an ASCII decimal digit string, checked for range before conversion; reject
+non-finite/fractional numbers, signed or whitespace-padded strings, exponent strings and overflow. This is field-specific:
+identifiers and durations must remain strings, and arbitrary strings never become lists.
+V0 must test file and label/KV provider representations through the actual adapter, including
+indexed source/feed lists and empty-list overlays. Support is limited to providers that preserve
+these documented shapes; publish tested syntax and explicit limitations before claiming support.
+Do not silently relax validation to accommodate a provider. Boolean coercion is not needed by
+the v1 schema.
 
 V1 has no `allowPrivateClient`, `setRealIP`, `onTrustedButInvalid`, or configurable rejection
 status. These old fields are rejected as unknown with migration guidance.
@@ -221,6 +254,8 @@ There is at most one of each header predicate per source in v1. Nonempty lists a
 header predicates. Every predicate may stand alone; no peer-address or secret anchor is imposed.
 Header-only trust is appropriate only when the deployment independently guarantees that header's
 provenance. A public client can otherwise send a matching value.
+Emit a construction-time warning naming each source without a peer-address predicate, without
+logging predicate values. No extra acknowledgement flag or mandatory peer anchor is imposed.
 
 Empty static/feed lists contribute nothing. The peer-address predicate exists only if at least
 one static entry or feed specification remains after overlay; an unavailable configured feed
@@ -252,6 +287,10 @@ that is the intended interpretation.
 Source selection is not authorization. In particular, a broad later source can intentionally
 accept traffic that an earlier account-specific source did not select. Requests that should be
 denied need a separate authorization middleware or ingress policy.
+Predicate and extraction failures can be induced externally, including by omitted or malformed
+headers and Connection nomination (§2.2). Conversely, synthesized X-Real-Ip can turn an omitted
+input into a successful source selection. These are ordering/provenance considerations, not
+exceptions to first-success selection.
 
 ## 4. IP and scheme parsing
 
@@ -269,8 +308,10 @@ denied need a separate authorization middleware or ingress policy.
   internal client's IP is legitimate. Reject unspecified addresses, multicast, and the IPv4
   limited broadcast address as extracted identities. Do not equate `IsGlobalUnicast` with
   public Internet reachability.
-- Apply the same usable-host checks and canonicalization to the peer. A peer that cannot produce
-  a usable fallback follows §1's integration-error behavior.
+- Canonicalize any parseable peer, but do not apply the extracted-identity prohibited-address
+  checks to it. Even an unspecified peer supplied by an earlier transport component remains
+  the fallback, not a Realclient-generated 500; it may be recorded in debug diagnostics.
+  Malformed host/port or a non-IP peer still follows §1's integration-error behavior.
 - Static entries and feeds use the same IP/CIDR parser. Exact addresses use the host rules above.
   CIDRs have no zones and are masked before storage. A prefix inside the IPv4-mapped /96 space,
   with length 96–128, is converted to IPv4 with 96 subtracted from its length. Reject mapped
@@ -299,7 +340,9 @@ Other uses of `Host` are config errors rather than accidental empty header reads
 Hostname normalization, applied identically to config values and request values:
 
 1. Trim outer space/tab; reject internal whitespace, lists, schemes, paths, and userinfo.
-2. Remove an optional single colon plus decimal port in 1–65535; reject malformed/empty ports.
+2. Use the shared bracket-aware authority splitter also used by §5.2. Remove an optional decimal
+   port in 1–65535; reject malformed/empty ports. Bracketed IPs may split successfully but are
+   rejected by the hostname policy below.
 3. Remove one terminal DNS dot and lowercase ASCII.
 4. Require nonempty DNS labels of 1–63 ASCII letters/digits/hyphens, no leading/trailing hyphens,
    and total hostname length at most 253. Reject IP literals, empty labels, wildcards, and
@@ -332,10 +375,14 @@ that its configured header is authoritative; peer-range membership alone does no
 overwrites client-supplied XFP. If no source succeeds, no scheme is configured, or scheme parsing
 fails, use peer transport (`https` for TLS, otherwise `http`) as the best available estimate.
 Keep a successfully extracted IP even when scheme falls back.
+Disagreement is not a promise against downgrade: HTTPS client traffic over a plaintext origin
+connection falls back to HTTP. Authoritative metadata is necessary for accurate original scheme.
 
 Emit `X-Forwarded-Proto` as `http`/`https`, or `ws`/`wss` for an actual HTTP WebSocket upgrade
 (Connection contains Upgrade and Upgrade is websocket, case-insensitively). Do not label arbitrary
 upgrades as WebSocket. Do not rewrite `req.TLS` to pretend an upstream client's TLS terminated here.
+This convention covers HTTP Upgrade handshakes; extended CONNECT without those headers retains
+HTTP/HTTPS output. Realclient does not infer WebSocket protocol state from other transports.
 
 For a deployment that must distinguish missing metadata from Traefik's synthesized XFP, use an
 authoritative non-managed header. Mixed origin/client schemes and origin Host overrides cannot
@@ -362,7 +409,8 @@ header from every source, including those not selected:
 `Forwarded`, `X-Forwarded-For`, `X-Real-Ip`, `X-Client-Ip`, `X-Cluster-Client-Ip`,
 `X-Original-Forwarded-For`, `X-Originating-Ip`, `True-Client-Ip`, `Cf-Connecting-Ip`,
 `Cf-Connecting-Ipv6`, `Cf-Pseudo-Ipv4`, `Fastly-Client-Ip`, `Fly-Client-Ip`,
-`X-Azure-Clientip`, `X-Azure-Socketip`, `X-Appengine-User-Ip`.
+`X-Azure-Clientip`, `X-Azure-Socketip`, `X-Appengine-User-Ip`, `Proxy-Client-Ip`,
+`WL-Proxy-Client-Ip`, `X-ProxyUser-Ip`.
 
 Compare header names case-insensitively with underscores treated as dashes when sweeping managed
 names, including configured inputs. This handles underscore aliases; it is not a universal
@@ -380,27 +428,36 @@ writing the stated values. Source scheme inputs are consumed and removed across 
 | Header | Output |
 |---|---|
 | `X-Forwarded-Proto` | Scheme resolved under §4.3, with WebSocket convention where applicable. |
-| `X-Forwarded-Scheme`, `X-Scheme` | Remove; v1 publishes one scheme channel rather than three. |
+| `X-Forwarded-Scheme`, `X-Scheme` | Rebuild both with the same value as canonical X-Forwarded-Proto. Consistent aliases are always emitted, independently of Traefik's addXForwardedSchemeHeaders setting. |
 | `X-Forwarded-Host` | Current `req.Host`; omit if empty. It is the host presented to Traefik, not a recovered original host. |
 | `X-Forwarded-Port` | Valid explicit decimal port from `req.Host`, otherwise 443/80 according to the resolved HTTPS/HTTP scheme. This is a best-effort authority port, not proof of the original listener port. |
 | `X-Forwarded-Prefix`, `X-Forwarded-Uri`, `X-Forwarded-Method` | Remove. No unverified original path/method is reconstructed. Later path/auth middleware may create its own values. |
-| `X-Forwarded-Server` | Remove. Backend routing does not require a synthesized server identifier. |
+| `X-Forwarded-Server` | Preserve Traefik's synthesized value unless consumed as a configured input. It does not compete on client IP or scheme. |
 | `X-Forwarded-Tls-Client-Cert`, `X-Forwarded-Tls-Client-Cert-Info` | Remove inbound assertions; a downstream certificate middleware may repopulate from `req.TLS`. |
 | `Cf-Visitor` | Remove: it is a competing scheme channel, including for Badger. |
 
 For IPv6 `req.Host`, use bracket-aware authority parsing; do not split on the first colon. If
 no valid explicit port is available, use the scheme default; never copy a malformed port header.
 An original nonstandard port or host hidden by a proxy override is outside v1's recovery contract.
+Traefik itself considers XFP before falling back to origin TLS for the port. A concrete difference
+is original HTTP over a TLS origin connection without an explicit Host port: Realclient emits
+80, whereas Traefik's transport fallback emits 443. Backends constructing redirects can observe it.
+
+Delegated certificate assertions such as Envoy/Istio `X-Forwarded-Client-Cert` are outside the
+IP normalization contract and are not deleted automatically. Their trust belongs to the
+deployment's certificate-authentication configuration. The Traefik-specific certificate headers
+above are cleared so its downstream certificate producer can publish actual `req.TLS` state.
 
 Preserve ordinary provider metadata such as `CF-IPCountry`, `CDN-Host`, `CDN-PullZoneId`,
 `CDN-RequestCountryCode`, `CDN-ServerId`, `Via`, and request IDs, including on direct requests.
 Their presence is not an assertion by Realclient that they are authentic.
 
-Deletion precedence is explicit: consumed identity/scheme inputs and future secret inputs are
+Deletion precedence is explicit: consumed identity/scheme inputs are
 removed even if a trust predicate also read them. Metadata used only for matching is preserved.
-Reject a configured extraction/scheme header colliding with Host, connection/framing headers,
+Reject a configured extraction/scheme header colliding with `Host`, `Connection`, `Upgrade`,
+`Transfer-Encoding`, `Content-Length`, `TE`, `Trailer`, `Keep-Alive`, `Proxy-Connection`,
 or an output of the other role; allow the intended identity input `X-Real-Ip` and scheme input
-`X-Forwarded-Proto`. Do not permit a secret to share an identity/scheme output name.
+`X-Forwarded-Proto`. Future secret-input precedence is specified in §9's v1.1 scope.
 
 Operators must account for downstream mutation. Badger can repopulate XFF when its own trust
 branch is active. A headers/auth middleware can overwrite canonical headers. Realclient cannot
@@ -438,8 +495,10 @@ publisher replacing one valid address set with another.
 Fetch with normal certificate validation, a 15-second total client timeout, no redirects, no
 credential loading, and close response bodies on all paths. Feed URLs are operator configuration,
 not derived from requests. Format changes or redirected endpoints require explicit config updates.
-Retry failures after two minutes; successful refreshes use the configured interval with ±10%
-jitter. No per-request fetches, backoff framework, or provider-account discovery.
+Retry failures after two minutes with ±10% jitter; successful refreshes use the configured
+interval with the same jitter. Send an identifying `traefik-realclient` User-Agent; this identifies
+the fetcher, not a guarantee against provider filtering. No per-request fetches, backoff framework,
+or provider-account discovery.
 
 ### 6.2 Worker identity and lifetime
 
@@ -460,11 +519,12 @@ Each worker owns immutable settings, its HTTP client, one serial fetch loop, and
 exposing the worker; never type-assert an uninitialized atomic value. Readers never mutate a
 published map/slice. Use no generic `atomic.Pointer[T]`.
 
-Insert one initializing registry entry under the mutex; release the mutex for cache I/O.
-Constructors encountering it share its initialization completion. Load and validate the cache,
-publish it if usable, mark initialization complete, then run one background loop with an immediate
-refresh. The constructor waits only for local initialization, not network availability.
-No global lock is held across cache or HTTP I/O. Failed local initialization still releases waiters.
+Insert one worker with its empty snapshot under the mutex and arrange exactly one background
+loop. Constructors share that worker and return without waiting for cache or network I/O.
+The loop loads and validates cache first, publishes it if usable, then immediately fetches and
+enters the refresh schedule. No global lock is held across cache or HTTP I/O. A slow cache can
+delay that worker's first fetch, but cannot stall router construction. Requests may use fallback
+even with a valid cache while its asynchronous load is pending; no initialization waiters exist.
 
 Workers deliberately live until interpreter/process exit and use a worker-owned background
 context with per-fetch deadlines, not the first router's `New(ctx)` context. Traefik cancels
@@ -484,6 +544,10 @@ Persistence is optional. Require an absolute cache directory when enabled; clean
 Use a schema-versioned hash of worker identity for the filename, never a URL path. Traefik needs
 write permission. An unreadable/unwritable cache is logged and treated as unavailable, not as a
 failure of the middleware configuration.
+Cache contents are trusted equivalently to middleware configuration: validation cannot establish
+their publisher provenance. Protect the directory and its parent path against untrusted writers
+or replacement. Restrictive files alone do not protect a writable directory. Legitimate shared
+container/group ownership is allowed; no simplistic owner-only permission check is imposed.
 
 Cache one complete validated representation with its identity/schema, normalized entries, ETag,
 and last successful validation time. On load, validate identity/schema, size, entries, and current
@@ -494,6 +558,9 @@ Publish entries and accepted validator as one coherent snapshot. An invalid 200 
 neither. Send `If-None-Match` only when there is a usable accepted representation and nonempty ETag.
 A 304 retains the set; without a usable representation, retry unconditionally instead of
 declaring success. A valid 200 without ETag clears the old validator.
+ETag presence does not guarantee an endpoint honors conditional requests. Exercise 304 and
+validator transitions with a controlled HTTP server; generic support is independent of whether
+the shipped provider feeds currently return 304.
 
 Write cache updates to a unique temporary file in the same directory, sync and close it, then atomically
 rename; use restrictive file permissions. A crash can lose a recent update but must not turn a
@@ -521,6 +588,10 @@ Log feed failures, recovery, cache failures, and new worker settings without res
 credentials. Ordinary per-request fallback is normal operation; do not emit an ERROR for every
 direct request. Optional debug diagnostics may record source/failure reason and peer without
 dumping headers. Metrics/counters can follow later.
+Failure diagnostics distinguish empty snapshots from retained LKG and include its validation age;
+rate-limit repeated warnings per worker, and report recovery. A below-minimum update leaves the
+previous accepted snapshot/cache intact. At unchanged settings, it does not invalidate an old
+cache that still satisfies the minimum, nor another feed belonging to the same source.
 
 ## 7. Presets and downstream compatibility
 
@@ -533,11 +604,11 @@ trust:
     - url: https://api.bunny.net/system/edgeserverlist/plain
       format: lines
       refreshInterval: 30m
-      minEntries: 100
+      minEntries: 1
     - url: https://api.bunny.net/system/edgeserverlist/ipv6
       format: json-array
       refreshInterval: 30m
-      minEntries: 50
+      minEntries: 1
 extract: {header: X-Real-Ip, mode: single}
 # No default authoritative scheme assumption; see below.
 
@@ -547,14 +618,18 @@ trust:
     - url: https://www.cloudflare.com/ips-v4
       format: lines
       refreshInterval: 12h
-      minEntries: 10
+      minEntries: 1
     - url: https://www.cloudflare.com/ips-v6
       format: lines
       refreshInterval: 12h
-      minEntries: 5
+      minEntries: 1
 extract: {header: Cf-Connecting-Ip, mode: single}
 scheme: {header: X-Forwarded-Proto, mode: single}
 ```
+
+Presets use the generic nonempty minimum. Today's feed counts are not a contractual lower bound;
+legitimate consolidation must not silently freeze updates. Operators may set higher `minEntries`
+with an explicit understanding that rejected updates retain LKG and can prevent cold-start use.
 
 **Bunny:** prior measurements establish overwrite behavior for IP headers in the tested stock
 path. They also observed `https, https` for XFP with Edge Rules/Scripting active; neither its hop
@@ -574,7 +649,9 @@ otherwise `CF-Connecting-IP` is synthetic and the real IPv6 is in `CF-Connecting
 Disable that mode rather than adding a provider-specific fallback branch in v1. Header-removal
 transforms cause peer fallback. Same-zone Workers can alter the identity feeding
 `CF-Connecting-IP`; cross-zone Worker subrequests use Cloudflare's documented shared Worker IP.
-The preset cannot invent the missing visitor identity. Original XFP is useful only if Traefik's
+The preset cannot invent the missing visitor identity. Cloudflare explicitly documents replacing
+client-supplied XFP with the client protocol; that published contract supports the scheme default.
+Original XFP is useful only if Traefik's
 entrypoint preserved it; with secure stripping use a trusted non-managed equivalent or accept
 the origin-transport estimate.
 
@@ -606,6 +683,12 @@ bouncer falls back to `RemoteAddr`. AppSec uses the same resolved address.
 `clientTrustedIps` is a separate enforcement bypass, not upstream trust; leave it empty unless
 that bypass is explicitly desired. If resolution fell back to a POP, enforcement necessarily
 uses the POP too. The middleware cannot recover an unavailable end-user identity.
+This includes first boot with feeds-only presets, unavailable cache/network, and the asynchronous
+cache-load window. The bouncer alone does not create a persistent ban from a traffic burst;
+log detection or configured AppSec remediation determines that behavior. When such detection is
+enabled, peer attribution can lead to shared-upstream decisions (§8.3). Operator-maintained static
+seeds or detection exclusions can mitigate this, but are optional, incomplete and independently
+maintained—not a prerequisite or a mandatory bouncer bypass.
 
 **Badger:** recommend `disableDefaultCFIPs: true`, `trustip: []`, `customIPHeader: ""`.
 It then uses the normalized address without reinterpreting CDN headers or rebuilding XFF.
@@ -636,6 +719,7 @@ for IP decisions.
 | `ClientAddr` | Pre-router-middleware peer address, including port; subject to earlier transport configuration, not incoming HTTP identity headers. |
 | `ClientHost` | Pre-middleware value, overridden by incoming XFF when present. Do not use it for this integration. |
 | `RouterName` | Router execution metadata, including parent/child chains. Presence alone does not prove Realclient ran. |
+| Entrypoint field | Identifies the ingress entrypoint for the coverage set below; it does not prove middleware execution. Verify the actual serialized field spelling in the pinned logger. |
 | `request_X-Real-Ip` | Header map value at logging time. It can be normalized, Traefik-synthesized, or client-supplied on a bypass path. |
 
 Realclient always emits a canonical peer identity on ordinary resolution failure. There is no
@@ -646,8 +730,11 @@ a marker, or make the HTTP request fail so that the parser can classify it.
 
 No response marker is required if the deployment accepts an explicit, tested coverage contract:
 
-1. Realclient is first configured middleware on every acquired root router/entrypoint and runs
-   once. No later middleware replaces canonical identity with untrusted data.
+1. Configure an explicit set of covered entrypoints in the local parser. Realclient is first
+   configured middleware on every root router on those entrypoints and runs once, including
+   internal API, dashboard, ping and ACME HTTP routers where present. No later middleware
+   replaces canonical identity with untrusted data. Acquiring logs from additional entrypoints
+   does not add them to the covered set; their identity headers remain unusable for attribution.
 2. Retain required core fields and the canonical request header:
 
    ```yaml
@@ -675,11 +762,16 @@ The local parser applies these rules in order, before setting `remote_addr`/`sou
 | Event | Attribution/action |
 |---|---|
 | Excluded/invalid status or malformed required JSON fields | Discard from the detection pipeline. |
-| RouterName absent/empty | Parse the host from ClientAddr; ignore X-Real-Ip and XFF even if present. |
-| RouterName present, valid single canonical X-Real-Ip | Use that header as the effective IP under the coverage contract. This includes normal peer fallback. |
-| RouterName present, missing/invalid canonical header | Discard; deployment contract failed. Do not guess from ClientHost. |
+| Entrypoint field missing/invalid | Discard; coverage cannot be determined. |
+| Entrypoint outside the covered set | Parse the host from ClientAddr; ignore identity headers. A deployment may instead exclude these peer-attributed events under §8.3. |
+| Covered entrypoint, RouterName absent/empty | Parse the host from ClientAddr; ignore X-Real-Ip and XFF even if present. |
+| Covered entrypoint, RouterName present, valid single canonical X-Real-Ip | Use that header as the effective IP under the coverage contract. This includes normal peer fallback. |
+| Covered entrypoint, RouterName present, missing/invalid canonical header | Discard; deployment contract failed. Do not guess from ClientHost. |
 
 Set the local parser's `remote_addr` and `source_ip` consistently before moving to s02.
+Retain the entrypoint field and test its exact JSON spelling against actual logs; do not substitute
+a Go constant identifier for the serialized key. Entrypoint coverage supplements RouterName and
+the status exclusions, rather than serving as execution proof by itself.
 For discarded events, use a tested parser filter/drop path so they cannot fall into the stock
 parser. No source-IP enrichment or whitelist should run first on the old value. Do not use
 `onsuccess: next_stage` in an early s02 override that accidentally skips remaining enrichment.
@@ -733,16 +825,26 @@ No tests or implementation are added by this design revision.
 - Load a minimal plugin through the intended Traefik release/Yaegi runtime and actual config
   adapter. Exercise raw-map validation, nested lists, unsupported fields, durations, preset
   overlay, netip map keys, atomic.Value, goroutines and concurrent construction.
+  Test two routers using the same middleware, including concurrent/repeated construction:
+  deep-compare the original nested config before and after, and verify independent results.
+  Verify file and label/KV forms, decimal minEntries strings, invalid numeric forms and list
+  representations; publish only the provider syntaxes actually demonstrated.
 - Demonstrate secure stripping and insecure preservation, including missing X-Real-Ip becoming
   the peer and missing XFP becoming origin transport. Do not assert missing-header rejection.
 - Demonstrate default-middleware placement, child inheritance, child-default 404, entrypoint
   unmatched 404, SNI rejection and encoded-path rejection. Confirm which header/core fields
   actually reach the logger, including buffered access logs.
+  Send Connection nominations for identity and selector headers, with and without allowlisting;
+  verify later-source selection and fallback. Exercise synthesized X-Real-Ip before a later
+  informative source, then reverse their order and assert first-success behavior in both cases.
+  Test PROXY-supplied `0.0.0.0:0` fallback separately from LOCAL, which preserves the real peer.
 - Confirm the intended pure request-mutation path preserves TLS state and protocol streaming.
 - Optional-log-integration spike: implement and validate the §8 parser recipe only when that
   integration is requested. It does not gate core Realclient v1. Feed forged public/private XFF
   and X-Real-Ip through covered, unmatched, 400/421 and abnormal paths; inspect source_ip,
   whitelist state, GeoIP metadata and resulting decisions, not just parser syntax.
+  Include an acquired but uncovered internal router with forged identity, missing entrypoint
+  metadata, and covered internal routers; verify the entrypoint field's exact serialized name.
 
 ### V1 — generic best-effort resolver
 
@@ -761,6 +863,9 @@ Native unit and integration tests must cover:
   malformed ports, bracketed peer IPv6, forbidden identity forms, duplicate header instances.
 - Header-role precedence and deletion across unselected sources; case/underscore aliases;
   preservation of country/provider metadata; canonical direct and resolved RemoteAddr tuples.
+  Confirm Traefik's delete alias posture blocks dotted aliases; document the unsupported keep
+  posture with a backend that maps punctuation to CGI-style names. Duplicate extraction-header
+  tests use X-Real-Ip/custom inputs; separate tests assert Traefik's XFF instance joining.
 - Exact identifiers without numeric coercion; actual wire whitespace handling; hostname label
   boundaries, trailing dot plus port, invalid ports/IDNs/IP literals, duplicate host predicates.
 - Scheme independent of IP: TLS and non-TLS origin crossed with HTTP and HTTPS original scheme;
@@ -768,9 +873,13 @@ Native unit and integration tests must cover:
 - Feed body limits, trailing garbage, duplicate-normalized counts, private CIDRs, invalid entry
   among valid ones, valid and invalid cache, 200/304, ETag changes only after validation,
   timeout/TLS/error responses, atomic cache interruption and failed persistence.
+  Use a controlled HTTP server for conditional requests. A below-minimum response retains old
+  LKG/cache and the other family; test initial empty state separately. Preset minima accept
+  legitimate consolidation down to one entry.
 - One feed loaded while the other is empty/LKG; static membership during outages; later updates
   learning new edges. Readers see complete per-feed snapshots, not a promised whole-source epoch.
-- Concurrent New calls and initial cache loading; identical reloads reuse workers; changed
+- Concurrent New calls and asynchronous cache loading, including blocked cache I/O that does
+  not block construction; identical reloads reuse workers; changed
   policy/URL/cacheDir creates independent workers; canceled router contexts do not stop polling;
   removed sources cease participating. Measure workers for stable keys, not all process goroutines.
 - Real CrowdSec bouncer and AppSec: ban a resolved test client, allow another, and verify fallback
@@ -779,17 +888,26 @@ Native unit and integration tests must cover:
   IP-range path; downstream passTLSClientCert clears forged input and uses real certificates.
 - Backend-observed XFF, X-Real-Ip and scheme; WebSocket handshake/data, native HTTP/2 and gRPC
   streaming through the intended full chain. Do not promise that AppSec inspects every message.
+  Compare forwarding outputs with stock Traefik: consistent scheme aliases, preserved server
+  identifier, original HTTP over TLS-origin port behavior, and delegated XFCC preservation.
 
 Run native race tests for registries/snapshot publication and actual Yaegi integration tests:
 native compilation alone is not Yaegi compatibility proof. Pin the supported Traefik release,
 its bundled Yaegi and Go toolchain in test documentation; master source inspection is not a
 blanket compatibility guarantee for older releases.
+The bundled interpreter's supported constructs and exported symbols are the API contract, not
+Traefik's newer build toolchain. The inspected Yaegi tables expose a Go 1.22-era surface, but that
+does not promise support for all Go 1.22 language features. Avoid newer exports such as
+strings.SplitSeq. Use a minimum-toolchain build and/or explicit `go vet` stdversion analysis in
+addition to Yaegi tests; a go.mod language directive or -lang flag alone does not restrict newer
+standard-library APIs supplied by a newer compiler.
 
 ### V1.1 — optional additions, separately justified
 
 - `trust.headerEquals` backed by `valueFrom: file:`, constant-time comparison and guaranteed
   secret deletion after all source attempts. Load files at construction; rotation requires
-  reload. Do not mutate shared preset data or log secret values.
+  reload. Secret deletion takes precedence over metadata preservation; reject secrets sharing
+  identity/scheme output names. Do not mutate shared preset data or log secret values.
 - Optional strict policy, only if needed: after all sources fail, reject only if at least one
   source fully matched its trust predicates but could not extract identity. Predicate non-matches
   alone remain fallback, later successes always win, and synthesized managed headers remain
@@ -875,7 +993,8 @@ change. Generic feeds are not required to resemble either provider.
 
 ## Appendix B. Adversarial review disposition
 
-Numbers refer to the independent review preceding this revision.
+Numbers refer to the original independent review. Appendix C records the subsequent Claude
+review and counter-review; its decisions supersede earlier dispositions where explicitly changed.
 
 | Finding | Disposition and reason |
 |---|---|
@@ -902,3 +1021,60 @@ Numbers refer to the independent review preceding this revision.
 
 The architecture can proceed to the v0 checks without treating optional log detection or Bunny
 account binding as prerequisites. Implementation starts only under a separate implementation task.
+
+## Appendix C. Claude review and counter-review disposition
+
+This follow-up incorporates the agreed corrections without changing the best-effort resolver
+architecture. Numbers below refer to Claude's 30-point review. Source checks support the
+corrections; planned integration behavior still requires §9's runtime tests.
+
+| Finding | Disposition and reason |
+|---|---|
+| 1. Connection-nominated deletion | **Accepted.** §2.2 specifies preservation requirements and externally induced source reselection; test allowlisted and unprotected inputs. |
+| 2. Shared decoded config | **Accepted.** §3.3 requires read-only input and independent internal settings; test repeated/concurrent router construction without mutation. |
+| 3. Parseable prohibited peers | **Accepted with corrected evidence.** Separate peer fallback from extracted-identity restrictions. PROXY LOCAL retains the real peer; it is not the advertised-zero-address case. |
+| 4. Synthesized identity pre-emption | **Accepted as an ordering warning.** Keep first-success selection. Supplied invalid values can still fail; scheme does not select IP sources. Reject special equal-to-peer continuation, which could override a legitimate preferred source. |
+| 5. Log coverage discriminator | **Accepted with qualification.** Explicit covered entrypoints supplement RouterName and exclusions. Internal routers are included. Entrypoint identity alone is not execution proof. |
+| 6. Clearing feeds removes anchoring | **Accepted as guidance/diagnostics.** Warn for effective header-only trust; no mandatory acknowledgement flag or peer anchor. |
+| 7. Provider count floors | **Accepted; failure account corrected.** Presets use minimum one. Rejected updates retain existing valid LKG/cache and do not invalidate independent feeds. A minimum of five accepts five. |
+| 8. Conditional-request evidence | **Clarified.** Observing an ETag did not prove 304 support. Claude reported conditional requests returning 200; that probe was not repeated here and does not replace retained measurements. Keep generic ETag support and controlled-server tests. |
+| 9. Cache trust boundary | **Accepted.** Protect cache files, directory and parent path from untrusted writers; cache syntax validation does not authenticate provenance. |
+| 10. Blocking cache initialization | **Accepted as a tradeoff.** Load in the worker, remove construction waiters, and explicitly accept fallback while a valid cache is still loading. |
+| 11. Partial feeds select later sources | **Already covered.** §6.4 explicitly tries other sources before peer fallback; no new selection rule. |
+| 12. Cold-start POP attribution | **Clarified.** Connect startup fallback to downstream enforcement/detection. No mandatory seeds or bouncer bypass; bouncer presence alone does not generate persistent bans. |
+| 13. Other upstream rewrites | **Accepted.** Document synthesis, WebSocket tokens and XFF joining; use observable inputs in cardinality tests. |
+| 14. Scheme aliases | **Accepted.** Publish both aliases consistently with canonical XFP rather than disabling consumers of those headers. |
+| 15. Additional identity channels | **Partially accepted.** Add the three IP headers. Preserve delegated XFCC by default: certificate-assertion policy is outside generic IP normalization. |
+| 16. Yaegi API limits | **Accepted; CI remedy corrected.** Actual exported symbols/language support govern compatibility. A language-version flag alone does not limit newer stdlib APIs; retain interpreter tests plus minimum-toolchain/stdversion checks. |
+| 17. Label/KV decoding | **Accepted as a contract gap.** Define field-specific decimal integer strings, preserve list/identifier strictness and verify provider syntax in V0. Do not claim all label/KV configurations are necessarily unsupported. |
+| 18. Cloudflare scheme evidence | **Rejected.** The provider explicitly documents overwriting client XFP. Keep the default and the existing input-preservation caveat; live measurement is corroboration, not required to accept the published contract. |
+| 19. Authority parsers | **Accepted as simplification.** Share splitting, retain distinct hostname versus forwarding-output validation. Different acceptance policies were not themselves a bug. |
+| 20. Falsification tests | **Accepted with corrected expectations.** Add shared-input, Connection, ordering, PROXY, coverage and backend tests. Assert retained LKG and the documented alias posture, not the review's incorrect failure expectations. |
+| 21. X-Forwarded-Server | **Accepted.** Preserve Traefik's synthesized value except when consumed as an explicit input. |
+| 22. Retry jitter | **Accepted.** Apply the same small jitter to failures; no backoff framework. |
+| 23. User-Agent | **Accepted as operational courtesy.** Identify the plugin without claiming a custom UA prevents provider filtering or relying on the review's Go-default-UA claim. |
+| 24. Duplicate execution | **Clarified.** Document scheme loss and possible further identity changes; no promise of idempotence. |
+| 25. Forwarded port | **Clarified with corrected evidence.** Traefik already considers XFP. Document the specific original-HTTP/TLS-origin difference instead of claiming it uses only origin transport. |
+| 26. Extended CONNECT | **Clarified.** Only the specified Upgrade handshake gets ws/wss output; other transports retain HTTP/HTTPS without inferring protocol state. |
+| 27. Reserved input headers | **Accepted.** Enumerate connection/framing exclusions. |
+| 28. Response writer | **Rejected.** Writing an error response does not replace or wrap the response writer. |
+| 29. Release wording | **Partially accepted.** Move secret precedence to v1.1. Original-host recovery differs from current-authority output; future strict policy does not require v1 to retain unused failure state. |
+| 30. Internal routers | **Accepted.** Explicitly document default-middleware application and construction-failure effects. |
+
+Additional evidence checked during the counter-review:
+
+- [Pinned mapstructure interface decoding](https://github.com/mitchellh/mapstructure/blob/8508981c8b6c/mapstructure.go)
+  assigns reference-bearing values without recursively cloning them.
+- [PROXY protocol RemoteAddr](https://github.com/pires/go-proxyproto/blob/v0.12.0/protocol.go)
+  uses the underlying connection for LOCAL, and advertised source information for PROXY.
+- [Entrypoint observability](https://github.com/traefik/traefik/blob/d48621ce0b6fd221b20bdb6c22e652e7498e5db6/pkg/server/middleware/observability.go)
+  adds entrypoint metadata; runtime log fixtures must verify its serialized name and coverage.
+- [Cloudflare's XFP contract](https://developers.cloudflare.com/fundamentals/reference/http-headers/#x-forwarded-proto)
+  explicitly states overwrite behavior; the same page documents Connection normalization.
+- [Yaegi strings exports](https://github.com/traefik/yaegi/blob/v0.16.1/stdlib/go1_22_strings.go)
+  lack SplitSeq; [stdversion analysis](https://pkg.go.dev/golang.org/x/tools/go/analysis/passes/stdversion)
+  detects references to stdlib symbols newer than the configured Go version.
+
+Mixed scheme metadata falling back to origin transport is not a security guarantee: HTTPS client
+traffic over plaintext origin transport becomes HTTP on fallback. §4.3 makes that limitation explicit.
+The resulting plan is ready for V0 feasibility checks; optional log integration still has its own gate.
