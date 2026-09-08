@@ -212,6 +212,78 @@ func TestSchemeAndNormalization(t *testing.T) {
 		}
 	}
 }
+
+// What a backend behind Traefik's non-rewriting path observes: canonical
+// identity, deleted competing/forwarded-request inputs, rebuilt authority
+// metadata, overlapping-source precedence, and independent scheme fallback.
+func TestBackendObservedForwarding(t *testing.T) {
+	// Resolved source: authority host/port rebuilt, request-forwarding headers dropped.
+	r := httptest.NewRequest("GET", "https://app.example.com:8443/a?b=c", nil)
+	r.RemoteAddr = "203.0.113.7:5"
+	r.TLS = &tls.ConnectionState{Version: tls.VersionTLS13}
+	r.Header.Set("X-Client", "192.0.2.50")
+	r.Header.Set("X-Proto", "http")
+	for _, h := range []string{"X-Forwarded-Prefix", "X-Forwarded-Uri", "X-Forwarded-Method"} {
+		r.Header.Set(h, "forged")
+	}
+	if _, called := apply(t, &Config{Sources: []SourceConfig{explicit()}}, r); !called {
+		t.Fatal("not called")
+	}
+	if r.RemoteAddr != "192.0.2.50:0" || r.Header.Get("X-Real-Ip") != "192.0.2.50" {
+		t.Fatal("identity", r.RemoteAddr, r.Header.Get("X-Real-Ip"))
+	}
+	if r.Header.Get("X-Forwarded-Host") != "app.example.com:8443" || r.Header.Get("X-Forwarded-Port") != "8443" {
+		t.Fatal("authority", r.Header.Get("X-Forwarded-Host"), r.Header.Get("X-Forwarded-Port"))
+	}
+	// Scheme metadata (http) is authoritative over the TLS peer transport, and
+	// drives the default port only when the authority carries none.
+	if r.Header.Get("X-Forwarded-Proto") != "http" {
+		t.Fatal("scheme not independent of peer transport")
+	}
+	for _, h := range []string{"X-Forwarded-Prefix", "X-Forwarded-Uri", "X-Forwarded-Method", "X-Forwarded-For"} {
+		if r.Header.Get(h) != "" {
+			t.Fatal("stale forwarding header", h)
+		}
+	}
+
+	// Peer fallback: canonical peer tuple, scheme from transport, default port.
+	r = request("[::ffff:198.51.100.9]:6100")
+	if _, called := apply(t, CreateConfig(), r); !called {
+		t.Fatal("not called")
+	}
+	if r.RemoteAddr != "198.51.100.9:6100" || r.Header.Get("X-Real-Ip") != "198.51.100.9" ||
+		r.Header.Get("X-Forwarded-Proto") != "http" || r.Header.Get("X-Forwarded-Port") != "80" {
+		t.Fatal("fallback tuple", r.RemoteAddr, r.Header)
+	}
+
+	// Overlapping sources both match the peer; the first extracts a malformed
+	// value, so the second wins and supplies its own scheme.
+	a := explicit()
+	a.Name = text("a")
+	b := explicit()
+	b.Name, b.Extract = text("b"), &HeaderConfig{Header: text("X-B"), Mode: text("single")}
+	b.Scheme = &HeaderConfig{Header: text("X-BProto"), Mode: text("single")}
+	r = request("203.0.113.7:5")
+	r.Header.Set("X-Client", "not-an-ip")
+	r.Header.Set("X-B", "192.0.2.77")
+	r.Header.Set("X-BProto", "https")
+	apply(t, &Config{Sources: []SourceConfig{a, b}}, r)
+	if r.Header.Get("X-Real-Ip") != "192.0.2.77" || r.Header.Get("X-Forwarded-Proto") != "https" ||
+		r.Header.Get("X-B") != "" || r.Header.Get("X-Client") != "" {
+		t.Fatal("overlap precedence", r.Header)
+	}
+
+	// A duplicate scheme-header instance is not usable; the extracted IP is kept
+	// and scheme falls back to peer transport.
+	r = request("203.0.113.7:5")
+	r.Header.Set("X-Client", "192.0.2.88")
+	r.Header["X-Proto"] = []string{"https", "https"}
+	apply(t, &Config{Sources: []SourceConfig{explicit()}}, r)
+	if r.Header.Get("X-Real-Ip") != "192.0.2.88" || r.Header.Get("X-Forwarded-Proto") != "http" {
+		t.Fatal("duplicate scheme header", r.Header)
+	}
+}
+
 func TestConfigImmutabilityAndValidation(t *testing.T) {
 	c := &Config{Sources: []SourceConfig{{Name: text("bunny"), Preset: text("bunny"), Trust: &TrustConfig{HeaderIn: &HeaderInConfig{Name: text("X-Zone"), Values: list("001")}}}}}
 	s, err := compileConfig(c)
