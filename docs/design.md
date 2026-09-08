@@ -1,1188 +1,904 @@
-# traefik-realclient — design & implementation plan
+# traefik-realclient — design and implementation plan
 
-**Dynamic trusted-proxy client IP resolution for Traefik.**
+**Revision:** 2026-09-08. **Status:** planning; no middleware implementation.
 
-| | |
-|---|---|
-| Repository / module | `traefik-realclient` |
-| Traefik plugin & config key | `realclient` |
-| Status | **Design complete; not implemented.** No code, repository, branch or production config exists. |
-| Document date | 2026-09-07 |
+> Determine the effective client IP behind configurable trusted upstreams as accurately and
+> generically as practical, then normalize the request so downstream middleware can consume
+> that identity without provider-specific knowledge.
 
-This document is self-contained: it carries its own evidence, the measurements behind each
-decision, and a list of earlier conclusions that were found to be wrong so they are not
-re-derived. Every upstream claim is cited to a file and line in §0.
+This is an identity resolver, not an authorization engine. Failure to resolve a more informative
+identity normally means using the immediate peer. Neither a missing header nor an unavailable
+feed is, by itself, a reason to reject an HTTP request.
 
----
+Bunny motivates dynamic address feeds; Cloudflare and internal proxies demonstrate the generic
+model. Multiple providers, overlapping sources, direct clients, private networks, and mTLS routes
+must coexist. Provider presets contain configuration data, not special request-processing code.
 
-## Problem statement and scope
+The upstream source findings and previous Bunny measurements are recorded in Appendix A.
+Measurements are evidence for the tested configurations, not a guarantee about every provider
+feature. Proposed runtime behavior below still requires the validation in §9.
 
-> A provider-agnostic Traefik middleware for dynamically establishing trust in upstream
-> proxies/CDNs, resolving their authoritative client identity, and normalizing the request so that
-> downstream middleware can consistently use `RemoteAddr` and canonical headers without knowing
-> provider-specific topology.
+## 1. Contract and limits
 
-**The problem is dynamic upstream trust.** Traefik's only native mechanism for trusting an upstream
-proxy is `entryPoints.*.forwardedHeaders.trustedIPs`, which lives in **static configuration** and
-therefore cannot track a trusted-peer set that changes without a restart. Everything else in this
-document follows from that gap.
+For every ordinary request on which Realclient runs:
 
-Bunny is the motivating provider because it publishes ~900 **individual edge addresses** (586 IPv4
-+ ~300 IPv6, F9) that change relatively often — precisely the shape static configuration handles
-worst. Cloudflare is the easy case by contrast: 22 stable CIDRs and a provider-specific header that
-Traefik does not strip. **Cloudflare could reasonably be configured statically today.** It is in
-scope to prove the abstraction is genuinely provider-agnostic, not because it needs solving.
+1. Capture the original peer from `req.RemoteAddr`, never a forwarding header.
+2. Try configured sources in order, using that same peer and the original headers.
+3. Select the first source whose predicates all hold and whose client-IP extraction succeeds.
+4. If none succeeds, use the peer.
+5. Resolve scheme from the selected source's configured metadata, otherwise from peer transport.
+6. Remove competing identity/forwarding inputs, publish canonical headers and a valid
+   `RemoteAddr`, and call the next handler.
 
-Multiple simultaneous providers on one Traefik instance are a first-class goal:
+The useful invariant is **one effective identity**, including when that identity is only the peer.
+An accepted source says the configured provenance assumptions were satisfied; it does not prove
+the extracted address is a unique human, globally routable, or authenticated to a provider account.
 
-```
-site A -> Bunny        site D -> direct
-site B -> Bunny        site E -> another trusted proxy
-site C -> Cloudflare
-```
+Realclient does not change `req.TLS`, `req.Host`, URL, method, body, or response writer. It does
+not buffer a body or wrap the connection. HTTP/2, gRPC, and WebSocket handling remain Traefik's job.
+TCP passthrough and UDP traffic do not execute HTTP middleware. Protocol handling alone does not
+make WebSocket messages or streaming gRPC messages receive a new identity decision: resolution is
+per HTTP request/handshake, not per message.
 
-The architecture is therefore an ordered list of generic `{ trust, extract }` sources:
+Here, "peer" means the address Traefik supplies at middleware entry. Normally this is the socket
+peer. If PROXY protocol or another earlier transport component replaces it, that component's
+configuration becomes part of the provenance boundary. Implementing PROXY protocol is out of scope.
 
-```
-establish that the immediate peer is a trusted upstream
-            ↓
-apply that source's extraction strategy
-            ↓
-normalize effective client identity
-```
+V1 does not reject a request for failed source matching, invalid upstream identity, invalid scheme
+metadata, or missing feed data. An unparsable `RemoteAddr` is a different case: no usable fallback
+exists. Clear identity inputs and return 500 without calling downstream handlers or echoing the
+address. This is a host/integration error, not a strict resolution policy.
 
-Bunny and Cloudflare are **presets over generic mechanisms**, never separate request-processing
-code paths. Provider-specific header names are a secondary concern — a parameter of `extract`, not
-a reason for the project.
+## 2. Traefik placement and input preservation
 
-Two things that are *consequences*, not motivations, and should be read as such:
+### 2.1 Where the middleware runs
 
-- **Bunny's choice of `X-Real-IP`** collides with Traefik's forwarded-header handling (F1) and
-  forces the posture decision in §2. It is an implementation obstacle, not the root problem.
-- **Binding requests to *our* Bunny account** (§9.4) is a residual threat with several optional
-  mitigations. It must not drive v1 complexity. Feed-only trust is the accepted baseline for this
-  personal/homelab deployment.
-
----
-
-## 0. Evidence base
-
-| Component | Version inspected |
-|---|---|
-| Traefik | `master` (2026-09-07) |
-| crowdsec-bouncer-traefik-plugin | `04d9288` (2026-09-05) |
-| crowdsecurity/hub `parsers/s01-parse/crowdsecurity/traefik-logs.yaml` | `master` (2026-09-07) |
-| fosrl/badger | `926d126` (2026-08-24) |
-| smerschjohann/mtlswhitelist | `HEAD` (2026-09-07) |
-| Bunny origin behaviour | **measured directly** via Edge Script echo app + disposable Pull Zone |
-| Bunny / Cloudflare feeds | probed live |
-
-### 0.1 Conclusions that were found to be wrong — do not re-derive these
-
-Earlier drafts of this design reached the following conclusions. Each was overturned by
-measurement or by reading upstream source. They are recorded so a fresh reader does not
-independently re-derive them.
-
-**Factual corrections (superseded by measurement):**
-
-| Earlier claim | Correction |
-|---|---|
-| "Bunny's `X-Forwarded-For` is `CDN-IP, user-IP`" | **Wrong** — it contains only the real client IP (F11). The original came from a search summary, not a primary source. |
-| "Unresolved: does Bunny overwrite or append a client-supplied `X-Real-IP`?" | **Resolved** (F11): Bunny overwrites, including duplicate header instances. Ordinary clients cannot spoof identity through Bunny. |
-| "`hostExact` on `CDN-Host` rests on two unmeasured properties" | **One measured, positive** (F16): hostname → Pull Zone is globally unique; re-registering an in-use hostname on a second zone is rejected. One property remains untested (§9.4). |
-| "Must test whether Bunny overwrites `X-Real-IP`" | **Done** (F11). |
-| "`hostSuffixes` over custom domains is a recommended default with real security value" | **Wrong** (F16): Bunny attaches custom hostnames with no DNS verification, so suffix matching is not ownership proof. Demoted to an explicitly-weak optional predicate (§4.2). |
-
-**Design conclusions that were reversed:**
-
-| Earlier conclusion | Correction |
-|---|---|
-| `hostSuffixes` removed entirely as "dead as a security control" | **Too absolute.** Restored (§4.2) as optional *weak defence in depth*, never described as authentication. |
-| Posture A (secure entrypoint) preferred on security grounds | **Reversed** (§2). F11 removed A's security advantage; posture B is recommended, conditional on the §8 access-log fix. |
-| "The shared secret is the only thing binding *from Bunny* to *from my Bunny*" | **Softened** (§9.4). Still the strongest binding, but a residual threat accepted for this deployment — not a design driver. |
-| Document framed around Bunny's `X-Real-IP` choice and account-binding | **Reframed.** The root problem is dynamic upstream trust vs. Traefik's static `forwardedHeaders.trustedIPs` (see Problem statement). Bunny's header choice is an obstacle (F1); account-binding is a residual threat. |
-| Cloudflare implicitly presented as needing this plugin | **Clarified.** Its 22 stable CIDRs could be configured statically today; it is in scope to prove genericity. |
-| `CDN-*` metadata must be stripped on the direct/non-provider path | **Withdrawn** (§6.3). Out of scope — those headers already pass through Traefik today. |
-| Every header any `trust` predicate read should be deleted | **Wrong** (§6.2). Deletion is by header *role*: identity removed and canonicalized, `headerEquals` secrets stripped after use, provider metadata read by `headerIn`/`host*` left untouched. |
-| "`CDN-*` predicates are only meaningful ANDed with a peer-address predicate" | **Reframed as Bunny guidance, not a rule** (§4.1, §6.3). Any predicate may stand alone; the plugin does not police combinations. |
-| Pull Zone ID allowlisting expressed as `hostExact` | **Split** (§4.1.1). Raw-byte predicates (`headerEquals`/`headerIn`) are separate from DNS-normalized ones (`hostExact`/`hostSuffixes`). |
-| `trust` implicitly required a peer-address or secret anchor | **Corrected** (§4.1). Any single predicate suffices; at least one required; all configured must hold; no boolean DSL. |
-| Rejected requests set `X-Real-Ip` to the peer "so the event is attributable" | **Changed** (§7, §8.2). Rejections leave it unset so the log path drops the event instead of attributing it to a POP. |
-| CrowdSec log parser should "fall back otherwise" to `ClientHost` | **Never** (§8.2). `ClientHost` is pre-middleware and client-influenced. |
-| …and its successor: "drop every event lacking `request_X-Real-Ip`" | **Also wrong** — it would blind probe detection. F18 shows unmatched requests are distinguishable; the rule is three-way (§8.2). |
-| `:0` presented as the correct `RemoteAddr` port | **Softened** (§6.1). The invariant is valid `host:port`; `:0` is a cleanliness preference. |
-| Retain the observed peer port when normalizing | **Changed** to `:0` (§6.1) — the hybrid client-IP + POP-port tuple is what the HAProxy design deliberately avoided. |
-| Three-layer feed cold start, shrink heuristics, configurable prefix floors, backoff curve | **Trimmed** out of v1 (§5). |
-
-**Not superseded:** F1's core conclusion. Bunny's identity headers are `X-Real-IP` and
-`X-Forwarded-For`; both are Traefik-managed and both are still stripped before any plugin runs.
-The correction to XFF's *contents* does not change the blocker.
-
----
-
-## 1. Findings
-
-### F1 — Traefik destroys Bunny's client IP before any plugin runs, and replaces it with the POP IP
-
-- `pkg/config/static/entrypoints.go:87` — `ep.ForwardedHeaders = &ForwardedHeaders{}`; zero value
-  is `Insecure=false, TrustedIPs=nil`.
-- `pkg/middlewares/forwardedheaders/forwarded_header.go`:
-  ```go
-  if !x.insecure && !x.isTrustedIP(r.RemoteAddr) { DeleteXForwardedHeaders(r.Header) }
-  ```
-  `isTrustedIP` returns false whenever `ipChecker == nil`, i.e. whenever `trustedIPs` is unset.
-- `XHeadersSet` contains **both** `X-Real-Ip` and `X-Forwarded-For` (and `_`-variants).
-- `rewrite()` then sets `X-Real-Ip` to the socket peer when empty.
-
-Bunny sends the end-user IP in **both** `X-Real-IP` and `X-Forwarded-For` (§F11). Under a stock
-entrypoint, Traefik deletes both and re-sets `X-Real-Ip` to the **Bunny POP address** — exactly
-the value we must not treat as the client.
-
-*Framing note:* this is an obstacle to work around, not the project's reason for existing. A
-provider that used a non-managed header (as Cloudflare does) would sidestep F1 entirely and still
-need everything else in this document. The root problem remains dynamic trusted-peer discovery.
-
-Survivors (never touched by Traefik): `Forwarded`, `CF-Connecting-IP`, `True-Client-IP`,
-`CF-Visitor`, `X-Client-IP`, **and Bunny's entire `CDN-*` namespace**. So Cloudflare works out of
-the box; Bunny does not.
-
-### F2 — entrypoint default middlewares are prepended to every root router
-
-`pkg/server/aggregator.go:362` — `cp.Middlewares = append(m.Middlewares, cp.Middlewares...)`.
-`entryPoints.<ep>.http.middlewares` (static config) is prepended to every root router on that
-entrypoint, including routers Pangolin / Middleware Manager generate dynamically. This is what
-makes a guaranteed-first normalizer possible without touching Middleware Manager, and is the
-precondition for posture B being defensible.
-
-Caveat: `aggregator.go:330` skips routers with `ParentRefs != nil` (child routers). Confirm
-Pangolin emits none.
-
-### F3 — backend-facing XFF is appended by the proxy, after all middlewares, from `RemoteAddr`
-
-`pkg/proxy/httputil/proxy.go:70-81`. Rewriting `req.RemoteAddr` therefore yields a correct
-backend-facing `X-Forwarded-For` for free, and deleting inbound XFF gives backends a clean
-single-entry chain.
-
-### F4 — `RemoteAddr` must remain valid `host:port`, or CrowdSec bans everything
-
-CrowdSec `pkg/ip/ip.go:124` → `net.SplitHostPort`; on error `bouncer.go:345` calls
-`handleBanServeHTTP(..., ReasonTECH)`. A bare IP in `RemoteAddr` would ban 100% of traffic.
-
-### F5 — CrowdSec **bouncer** IP resolution (request-time)
-
-`bouncer.go:343` → `ip.GetRemoteIP(req, serverPoolStrategy, forwardedCustomHeader)`. Defaults:
-header `X-Forwarded-For`, trusted pool empty. `PoolStrategy.getIP` walks the header right-to-left
-and returns the first entry not in the (empty) pool — i.e. the **rightmost XFF entry**. It falls
-back to `RemoteAddr` **only when the header is absent or entirely empty**.
-
-⇒ Delete inbound XFF and the bouncer uses `RemoteAddr` with zero CrowdSec configuration. AppSec
-uses the same resolved value (`bouncer.go:492`). `clientTrustedIPs` is a separate bypass check on
-the resolved client and is correctly unrelated to CDN trust.
-
-### F6 — Badger IP resolution, and a real hazard
-
-`main.go:491-512`: `isTrustedIP(RemoteAddr)` against `trustIP`; if trusted and `CF-Connecting-IP`
-present, use it; else `SplitHostPort(RemoteAddr)`. `main.go:179-187`: when `DisableDefaultCFIPs`
-is false (**the default**) Badger loads hardcoded Cloudflare CIDRs into `trustIP`.
-
-Post-normalization `RemoteAddr` is the real client. A client inside Cloudflare's ranges —
-Cloudflare WARP egresses exactly there — enters Badger's trusted branch. Deleting
-`CF-Connecting-IP` on the direct path neutralizes it. Concrete justification for sanitizing
-direct traffic too.
-
-### F7 — mtlswhitelist depends on `X-Real-Ip` with no `RemoteAddr` fallback
-
-`iprange.go:49-51` reads `X-Real-Ip`, falls back to `X-Forwarded-For`, `net.ParseIP`s it, and
-denies on nil. Deleting `X-Real-Ip` without re-setting it fails every IP-range rule closed.
-Setting canonical `X-Real-IP` is mandatory. Its mTLS path (`mtlsOrWhitelist.go:173`) reads
-`req.TLS.PeerCertificates`, untouched by this design.
-
-### F8 — plugin lifecycle / Yaegi
-
-`pkg/plugins/middlewareyaegi.go`: `interp.New` + `i.Use(stdlib.Symbols)` — **one interpreter per
-plugin name**, full stdlib including `net`, `net/http`, `net/netip`, `sync`, `sync/atomic`,
-`time`, `encoding/json`, `os`. `Builder.Build` → `newMiddleware(config)` → `NewHandler(ctx,next)`,
-both re-run on **every dynamic config reload**. Config decode is `mapstructure` with
-`WeaklyTypedInput: true`.
-
-Consequences: package-level globals are shared across all instances (the basis for the shared
-feed registry); there is **no shutdown hook** (`pluginMiddleware` exposes only `NewHandler`), so
-refcounted teardown is not implementable; `New()` must be idempotent and cheap; avoid generics
-(`atomic.Pointer[T]`); the per-request path runs interpreted and must stay trivial. Precedent:
-the CrowdSec plugin already uses package globals, `go func()`, tickers and `sync/atomic` in
-production under Yaegi.
-
-### F9 — feed shapes (probed live)
-
-| Feed | URL | Format | Content |
-|---|---|---|---|
-| Bunny v4 | `api.bunny.net/system/edgeserverlist/plain` | lines, **ETag** | 586 bare IPv4 **addresses** |
-| Bunny v6 | `api.bunny.net/system/edgeserverlist/ipv6` | JSON array (even with `?plain=true`) | ~300 bare IPv6 addresses |
-| CF v4 | `www.cloudflare.com/ips-v4` | lines | 15 CIDRs |
-| CF v6 | `www.cloudflare.com/ips-v6` | lines | 7 CIDRs |
-
-Bunny is ~900 exact hosts; Cloudflare is 22 prefixes. Hence the hybrid
-`map[netip.Addr]struct{}` + `[]netip.Prefix` structure. Parser keys off configured format, not
-content-type sniffing.
-
-### F10 — access log: `Core` fields are frozen at entry, header fields are live
-
-This is the distinction that resolves the CrowdSec log problem, and it is easy to get half right.
-
-- `pkg/middlewares/accesslog/logger.go:197-207` — at entry, `core` is populated and
-  `Request.headers` is set to **`req.Header` itself, a live map reference, not a copy**.
-- `logger.go:266-271` — `core[ClientAddr] = req.RemoteAddr` and `core[ClientHost]` (overridden by
-  XFF when present) are **string copies taken at entry**, before router middlewares.
-- `logger.go:379` — `redactHeaders(logDataTable.Request.headers, fields, "request_")` runs at
-  **log-write time**, after the entire chain.
-
-⇒ `ClientAddr` / `ClientHost` cannot be influenced by any plugin. But **request header fields in
-the access log reflect middleware mutations**, so a header the normalizer sets *is* loggable.
-Field naming is `request_<Canonical-Header-Key>`; `logger.go:142` canonicalizes configured names.
-
-### F11 (new, measured) — Bunny overwrites client-supplied identity headers
-
-Method: Bunny Edge Script echo app returning received headers, behind a disposable Pull Zone.
-
-- With no Edge Rules, the origin receives `X-Real-IP: <real client>` **and**
-  `X-Forwarded-For: <real client>` — XFF contains the client only, **not** `CDN-IP, user-IP`.
-- Client-supplied `X-Real-IP: 9.9.9.9` / `X-Forwarded-For: 8.8.8.8`, including **duplicate**
-  `X-Real-IP` headers, were all overwritten. The origin still saw the real client IP.
-
-⇒ Ordinary internet clients cannot spoof identity through Bunny. This eliminates what was the
-largest unresolved risk in this design.
-
-### F12 (new, measured) — Bunny's `CDN-*` namespace is protected from Pull Zone owners
-
-- Edge Rules refuse to set `CDN-PullZoneId`: *"Header names starting with CDN- are not allowed"*.
-- Edge Scripting middleware could rewrite `X-Real-IP` / `X-Forwarded-For`, but the origin still
-  received genuine Bunny-generated `CDN-*` metadata.
-
-⇒ Within Bunny, `CDN-*` is a meaningfully stronger channel than ordinary forwarding headers.
-Note it is *only* stronger inside Bunny: `CDN-*` is not in Traefik's `XHeadersSet`, so a **direct**
-client can send whatever `CDN-*` headers it likes. `CDN-*` metadata is only *provider-authenticated*
-when the request has actually traversed Bunny — which is why the Bunny preset documentation
-recommends combining a `CDN-*` predicate with Bunny peer-range trust. That is deployment guidance,
-not a validation rule (§4.1). (The plugin does not strip these headers — see §6.3.)
-
-### F13 (new, measured) — `CDN-Host` tracks the hostname Bunny actually routed
-
-Same Pull Zone reached via three hostnames returned `CDN-Host: test-pabb4.b-cdn.net`,
-`test-pabb4.bunny.run`, `btest.oandc.fun` respectively. Sending
-`Host: definitely-not-your-domain.example` was rejected by Bunny itself ("Domain suspended or not
-configured") and never reached the origin.
-
-⇒ `CDN-Host` is a hostname Bunny accepted and routed, not a protected copy of arbitrary client
-input. See F16 for what this does **not** prove about ownership.
-
-### F14 (new) — CrowdSec's Traefik **log parser** derives `source_ip` from `ClientHost`
-
-`parsers/s01-parse/crowdsecurity/traefik-logs.yaml`:
-```yaml
-- parsed: remote_addr
-  expression: "TrimSpace(Split(evt.Unmarshaled.traefik.ClientHost, ',')[-1])"
-...
-- meta: source_ip
-  expression: "evt.Parsed.remote_addr"
-```
-`source_ip` is the **rightmost** comma-separated element of `ClientHost` — which per F10 is
-frozen pre-middleware. The same file already reads `evt.Unmarshaled.traefik["request_User-Agent"]`,
-confirming the `request_<Header>` field naming used by the §8 fix.
-
-### F15 (new, verified) — `:0` is a safe synthetic port
-
-Every consumer found uses `net.SplitHostPort` and then discards or string-handles the port:
-Traefik `pkg/ip/strategy.go:28` (`RemoteAddrStrategy`), accesslog `silentSplitHostPort`
-(`logger.go:475`), proxy XFF append (`proxy.go:71`), CrowdSec `ip.go:124`, Badger `main.go:508`,
-mtlswhitelist `twofactor.go:128` / `webpages.go:123`. None parses the port numerically or
-range-checks it. Confirmed by execution: `net.SplitHostPort` accepts `1.2.3.4:0` and
-`[2001:db8::1]:0`; `net.JoinHostPort` brackets IPv6 correctly.
-
-### F16 (new, measured) — Bunny attaches custom hostnames **without DNS verification**
-
-A hostname the operator does not own (`testmyshitnig.com`) was added to the disposable Pull Zone
-and immediately routed:
-```
-curl -H 'Host: testmyshitnig.com' https://test-pabb4.b-cdn.net/
-  -> cdn-host: testmyshitnig.com   (and origin Host: testmyshitnig.com)
-```
-Bunny performed no CNAME or ownership check. `CDN-Host` therefore reflects a hostname merely
-**registered on the zone**, not one the zone owner controls.
-
-⇒ **`hostSuffixes` is not ownership proof.** An attacker creates their own Pull Zone, registers
-`anything.lochnair.net` on it (any label we have not already taken), points the origin at our IP,
-and produces a `CDN-Host` that satisfies `*.lochnair.net`. It must therefore never be described as
-authentication. It is retained in §4.2 as optional weak defence in depth — it still raises effort
-and filters misconfiguration at near-zero operational cost — but it is neither a default nor a
-security boundary.
-
-What survives is narrower, and one part of it has since been **measured**: attempting to attach an
-already-registered exact hostname to a second Pull Zone is **rejected as already registered**. So
-hostname → Pull Zone is globally unique, and a hostname we have already registered cannot be
-claimed by another account. Any *unregistered* name in our namespace remains freely claimable.
-
-⇒ `hostExact` over hostnames we actually serve rests on provider-enforced uniqueness and is sound,
-subject to one remaining untested property (§9.4): that `CDN-Host` reflects the **routed** hostname
-and is not affected by a zone's origin-Host override. `hostSuffixes` is restored in §4.2 but
-explicitly as *weak defence in depth*, never as ownership proof.
-
-### F17 (new, observed) — Bunny does not produce a clean `X-Forwarded-Proto`
-
-The same capture returned `x-forwarded-proto: "https, https"` although the client sent none. The
-zone had Edge Rules and Edge Scripting active, so the exact cause is unclear, but the conservative
-conclusion is independent of the cause: **the inbound `X-Forwarded-Proto` may arrive comma-joined
-and must not be trusted verbatim.** Under posture B, Traefik's `rewrite()` only sets the header when
-it is empty, so a comma-joined value would pass straight through to the backend. §6.4's
-delete-and-re-derive rule already covers this; F17 is the evidence that it is load-bearing rather
-than theoretical.
-
-Also visible and worth recording: Bunny emits `CDN-ConnectionId`, `CDN-RequestId`, `CDN-JA4`
-(client TLS fingerprint), `CDN-LoopCount`, `CDN-ProxyVer`, `CDN-MobileDevice`, `CDN-ServerZone`,
-`CDN-RequestStateCode` alongside the already-known `CDN-Host` / `CDN-PullZoneId` /
-`CDN-RequestCountryCode` / `CDN-ServerId`. All are in the protected namespace (F12). None carries
-client IP; none is used by this design.
-
-### F18 (new, investigated) — unmatched requests are logged, and are distinguishable from rejections
-
-Investigated because a blanket "drop every event lacking `request_X-Real-Ip`" would have discarded
-scanner and probe traffic that never matched a router — exactly what CrowdSec should be detecting.
-
-- **Unmatched requests are logged.** `pkg/server/router/router.go:212` and `:234` build
-  `observabilityMgr.BuildEPChain(...).Then(http.NotFoundHandler())` and install it via
-  `muxer.SetDefaultHandler(...)`. The observability chain contains the access logger, so a request
-  matching no router still produces a log line (status 404).
-- **The entrypoint-default normalizer does not run for them.** Entrypoint default middlewares are
-  attached to *routers* through the `@internal` model (F2). No router, no middleware chain.
-- **`RouterName` is set outside the middleware chain.** `router.go:371-373` appends
-  `accesslog.NewConcatFieldHandler(next, accesslog.RouterName, routerName)` *before*
-  `chain.Extend(*mHandler)`, so it is populated for any request a router matched — **including one
-  the normalizer subsequently rejected**. On the unmatched path it is never set, and since
-  `logger.go:373` iterates over the populated `Core` map, the field is **omitted from the JSON
-  entirely** rather than emitted empty.
-- **`ClientAddr` is socket-backed and unspoofable.** `logger.go:266` — `core[ClientAddr] =
-  req.RemoteAddr`, taken at entry. Unlike `ClientHost` (`logger.go:269`, overridden by XFF when
-  present, so client-controllable under posture B) it never derives from a header.
-
-⇒ Three states are cleanly distinguishable in the access log:
-
-| | `RouterName` | `request_X-Real-Ip` | Meaning | `source_ip` |
-|---|---|---|---|---|
-| A | present | present | normalized | the header (authoritative) |
-| B | **absent** | absent | no router matched | host of `ClientAddr` (socket peer) |
-| C | present | **absent** | router matched, normalizer rejected or did not run | **none — drop** |
-
-Caveat for B: a probe arriving *through* a CDN at a hostname with no router is attributed to the POP
-address, since nothing normalized it. That is what the optional CDN-range detection whitelist in
-§8.2 covers.
-
-Incidental defect to avoid inheriting: the stock parser derives its `dest_addr` via
-`Split(ClientAddr, ':')[0]`, which is wrong for IPv6 (`[2001:db8::1]:443` → `[2001`). Any expression
-we write over `ClientAddr` must handle bracketed IPv6.
-
----
-
-## 2. Posture decision
-
-F1 still means Bunny's identity cannot survive to the plugin under a stock entrypoint.
-
-**Posture A** — keep `forwardedHeaders` secure; move identity into a non-Traefik-managed header
-via a per-Pull-Zone Edge Rule (Cloudflare needs nothing; `CF-Connecting-IP` already survives).
-Smallest plugin. Forgetting a zone fails **closed** (peer in feed, identity header missing → 403),
-not open.
-
-**Posture B** — `forwardedHeaders.insecure: true`; the plugin owns all forwarded-header hygiene.
-Works with Bunny's stock `X-Real-IP`. **No per-Pull-Zone configuration.**
-
-**Posture C** — static `forwardedHeaders.trustedIPs`. Still rejected: static config, restart to
-update, reintroduces the external range plumbing this project exists to remove.
-
-### Recommendation: posture B, conditional on the §8 access-log fix
-
-An earlier draft of this design hedged toward posture A on security grounds. Two measured facts
-settle it the other way:
-
-1. **F11 removes A's main security advantage.** The worry was that a client might smuggle
-   identity through Bunny. Measured: it cannot. The Edge Rule bought protection against a threat
-   that does not exist.
-2. **F14 + F10 show the real risk of B is in the log path, and it is fixable.** With
-   `insecure: true`, inbound XFF survives to the access logger, so `ClientHost` — and therefore
-   CrowdSec's `source_ip` — becomes client-controllable on *direct* traffic. That is a remote,
-   unauthenticated ability to get an arbitrary third party banned, since the resulting decision is
-   enforced by the bouncer against the real owner of that IP. **This is worse than anything in
-   the pre-measurement threat model and must be fixed, not accepted.** §8 fixes it.
-
-Note posture A is *also* broken on the log path, differently and by default: with a secure
-entrypoint Traefik deletes XFF, so `ClientHost` is the socket peer and CrowdSec detection
-attributes all CDN traffic to **POP addresses**, eventually banning a POP and blackholing all
-Bunny traffic. The §8 fix is required either way; it is not a tax specific to posture B.
-
-What posture B costs: the plugin must delete and re-assert
-`X-Forwarded-Proto` / `-Scheme` / `X-Scheme`, `-Host`, `-Port`, `-Prefix`, `-Uri`, `-Method`,
-`-Server`, and unconditionally delete `X-Forwarded-Tls-Client-Cert{,-Info}`. Safe only because of
-F2. Build the posture as a config flag so A remains available without a code change.
-
-Rejected variant: a dedicated CDN entrypoint on another port. It is still per-zone configuration
-(the origin URL), and forgetting it fails **open** — the request lands on :443 and the POP becomes
-the client. Strictly worse than A's Edge Rule.
-
----
-
-## 3. Architecture and request flow
-
-The empirical results support this shape. Source = `{ name, trust, extract }`,
-evaluated as an ordered list, first trust match wins.
-
-1. `peer` := socket peer from `req.RemoteAddr`. **Never** from a header.
-2. Walk `sources` in order; first source whose `trust` predicates **all** hold for this request wins.
-3. Matched → apply `extract` → `client`, or a fail-closed action.
-4. No match → `client = peer` (direct; first-class, including all mTLS routes).
-5. Sanitize headers, set `X-Real-Ip`, rewrite `RemoteAddr`, call `next`.
-
-```
-socket peer ─┬─ matches a source? ──no──> client = peer          (direct / mTLS)
-             └─ yes ─> extract identity ─┬─ valid ──> client = extracted
-                                         └─ invalid ─> 403 (fail closed)
-                                    ↓
-              sanitize identity headers (both paths)
-              set X-Real-Ip = client        ← also the access-log/CrowdSec channel (§8)
-              set RemoteAddr = client:0     (normalized) / unchanged (direct)
-                                    ↓
-                      CrowdSec → Badger → backend
-```
-
-Still **no XFF-chain walking in v1**. Bunny and Cloudflare both provide clean single-value
-headers; a chain walker serves no current provider and is where spoofing bugs live.
-
----
-
-## 4. Configuration shape
+Configure Realclient first in the entrypoint's default HTTP middleware list, using a qualified
+dynamic middleware name:
 
 ```yaml
+# Traefik static configuration; plugin registration/module version is deployment-specific.
+entryPoints:
+  websecure:
+    address: ":443"
+    forwardedHeaders:
+      insecure: true
+    http:
+      middlewares:
+        - realclient@file
+      aliasHeadersStrategy: delete
+```
+
+Entrypoint defaults are prepended to root routers. A root's middleware chain wraps its child
+router muxer, so children and the child muxer's 404 inherit that execution. Do not attach a second
+Realclient instance to children: after the first rewrite, `RemoteAddr` no longer identifies the
+upstream peer. Duplicate placement is unsupported, not a mechanism for deeper chain walking.
+
+This is first **configured middleware**, not first request processing:
+
+- Root routing, including root `ClientIP` and header rules, happens before Realclient.
+- Access-log collection starts outside configured router middleware.
+- Internal router checks can reject before Realclient.
+- An entrypoint-level unmatched 404 does not execute router middleware at all.
+- Child rules execute after the parent middleware chain and therefore see its normalized address.
+
+Do not use root forwarding-header matches as though this plugin had already authenticated them.
+Adding/removing the static middleware reference needs a restart; changing or removing the dynamic
+definition is still possible. A static reference does not make the dynamic middleware immutable.
+
+### 2.2 Preserve an input before trying to resolve it
+
+Traefik's secure forwarded-header handler deletes managed headers from untrusted peers, including
+`X-Real-Ip` and XFF, then fills an empty `X-Real-Ip` from the peer. No router middleware can recover
+an identity already destroyed there.
+
+Deployment choices:
+
+| Deployment | Identity input | Consequence |
+|---|---|---|
+| Dynamic upstreams using managed headers, including stock Bunny | `forwardedHeaders.insecure: true` | Preserves input; Realclient normalizes it on its execution paths. Pre-plugin consumers still see untrusted input. |
+| Secure entrypoint with no native trusted ranges | Non-managed authoritative header; Bunny needs an origin rule copying the client identity to one | A missing custom header leads to peer fallback. Cloudflare's normal `CF-Connecting-IP` needs no renaming. |
+| Secure entrypoint with native `trustedIPs` | Managed headers from those native trusted peers | Supported, but the address list is static and requires restart to change. |
+
+A separate ingress port is also a legitimate deployment choice, not inherently a fail-open bug.
+Choose based on topology and operational cost. Realclient does not enforce or discover the static
+entrypoint posture. There is no `entrypointForwardedHeaders` plugin flag in v1: the same explicit
+normalization runs in every posture, eliminating two divergent sanitization paths.
+
+There are two unavoidable ambiguities:
+
+- An absent/empty incoming `X-Real-Ip` can arrive at Realclient as the peer because Traefik filled
+  it. Accepting that valid value gives the same effective IP as fallback. Do not reject equality
+  with the peer or claim to distinguish synthesis from a legitimate equal-address identity.
+- Traefik can similarly synthesize a missing `X-Forwarded-Proto`. A trusted source using this
+  managed header cannot distinguish synthesis from supplied metadata. Use a provider-controlled
+  non-managed header if distinguishing absence is required.
+
+The insecure setting is useful for stock Bunny, but optional log detection must follow §8 rather
+than blindly consuming the stock CrowdSec `ClientHost` attribution.
+
+## 3. Configuration and source selection
+
+### 3.1 V1 configuration
+
+```yaml
+# Traefik dynamic configuration.
 http:
   middlewares:
     realclient:
       plugin:
         realclient:
-          entrypointForwardedHeaders: insecure   # insecure | secure  (posture B | A)
-
-          sources:                                # ordered; first full match wins
+          feedCacheDir: /var/lib/traefik/realclient
+          sources:
             - name: bunny
               preset: bunny
-              # optional hardening, all off by default — see §4.2:
-              #   trust: { hostSuffixes: {header: Cdn-Host, suffixes: ["lochnair.net"]} }
-              #   trust: { hostExact: {header: Cdn-Host, values: [...]} }
-              #   trust: { headerEquals: {name: X-Origin-Auth, valueFrom: "file:/run/secrets/bunny"} }
+              # Optional selection, not required by the preset:
+              # trust:
+              #   headerIn:
+              #     name: Cdn-Pullzoneid
+              #     values: ["6498612"]
             - name: cloudflare
               preset: cloudflare
             - name: internal-lb
-              trust: { static: ["10.42.0.0/16"] }
-              extract: { header: X-Real-Ip, mode: single }
-
-          onTrustedButInvalid: reject             # reject | direct  (default reject)
-          rejectStatusCode: 403
-          allowPrivateClient: false
-          setRealIP: true
-          feedCacheDir: /var/lib/traefik/clientip
+              trust:
+                static: ["10.42.0.0/16"]
+              extract:
+                header: X-Real-Ip
+                mode: single
+              scheme:
+                header: X-Forwarded-Proto
+                mode: single
 ```
 
-Presets are **pure data** — a `map[string]Source` literal expanded before request handling, every
-field overridable inline. If a provider cannot be expressed as a preset, extend the generic
-config; never add a provider-specific request path.
+Top-level fields are `sources` (ordered list, default empty) and `feedCacheDir` (default empty,
+disabling persistence). An empty source list is useful as a peer-only normalizer.
+
+Source fields are `name`, `preset`, `trust`, `extract`, and optional `scheme`.
+Names are nonempty and unique within an instance. No automatic name or preset is inferred.
+Every expanded source needs at least one effective trust predicate and a complete
+`extract: {header: ..., mode: single}` object. Both extraction fields are required.
+
+### 3.2 Deterministic preset overlay
+
+Only this documented overlay exists; there is no general deep merge:
+
+- Copy the preset into independent instance-owned data.
+- Within `trust`, each explicitly supplied predicate replaces that entire predicate; omitted
+  predicates retain the preset's value. The peer family has two separately replaceable list
+  fields, `static` and `feeds`.
+- Lists replace, never append. An explicit empty `static` or `feeds` list clears that list.
+- `extract` and `scheme`, when supplied, replace their entire objects. `scheme: {}` disables
+  source scheme extraction. A nonempty scheme object must be complete.
+- `trust: {}` adds/overrides nothing; it does not clear inherited predicates. To discard a
+  preset's provenance assumptions altogether, write a source without `preset`.
+- An explicitly empty header predicate is invalid, not an instruction to disable it.
+- Explicit null values are invalid everywhere. Validate the final expanded source.
+
+Thus `preset: bunny` plus `trust.headerIn` retains Bunny's feeds and adds one AND condition.
+An inline list of feeds replaces the preset list in full, including its IPv6 member. Operators
+must supply both if both are wanted.
+
+### 3.3 Strict decoding at the plugin boundary
+
+Traefik's mapstructure adapter uses weak conversion and does not reject unused keys. Ordinary
+typed structs with ignored unknown fields are insufficient for this configuration.
+
+Plan a raw map-based external config returned by `CreateConfig`, followed by explicit recursive
+validation and conversion into typed, immutable internal settings in `New`. The Yaegi spike
+must verify this exact boundary with Traefik's adapter. Preserve unknown keys and original scalar
+types until validation; do not silently coerce numeric identifiers, booleans, or lists. If a
+provider has already converted a value to a string, original file bytes cannot be reconstructed.
+
+Validate field names against the exact documented spelling, including nested maps and list
+elements. Reject unknown keys, unknown presets/modes, unsupported versioned fields, nulls,
+incorrect scalar/list shapes, empty required strings, and invalid header names. A v1 config
+containing `headerEquals` must fail clearly, not silently become feed-only trust.
+
+Durations are strings parsed explicitly with `time.ParseDuration`, positive and at least one
+second; there is no assumed mapstructure duration hook. Numeric durations are invalid. The
+documented YAML lists remain lists; label-provider compatibility needs an actual decoding test,
+not a promise that arbitrary comma-separated strings are equivalent.
+
+V1 has no `allowPrivateClient`, `setRealIP`, `onTrustedButInvalid`, or configurable rejection
+status. These old fields are rejected as unknown with migration guidance.
+
+Validate the whole instance before starting new feed workers. Invalid config fails construction
+of that middleware; do not describe this as necessarily terminating the Traefik process or
+preserving its old dynamic routing configuration.
+
+### 3.4 Trust predicates
+
+All configured predicates on one source must hold:
+
+| Predicate | Meaning |
+|---|---|
+| `static: [IP-or-CIDR, ...]` and `feeds: [FeedSpec, ...]` | Together ONE predicate: original peer belongs to the union of all static addresses and currently available feed sets. |
+| `headerIn: {name, values}` | One parsed header value equals an element of an exact, case-sensitive string set. |
+| `hostExact: {header, values}` | One normalized hostname equals an element of the normalized hostname set. |
+| `hostSuffixes: {header, suffixes}` | One normalized hostname equals a suffix or ends with a dot plus that suffix. |
+
+There is at most one of each header predicate per source in v1. Nonempty lists are required for
+header predicates. Every predicate may stand alone; no peer-address or secret anchor is imposed.
+Header-only trust is appropriate only when the deployment independently guarantees that header's
+provenance. A public client can otherwise send a matching value.
+
+Empty static/feed lists contribute nothing. The peer-address predicate exists only if at least
+one static entry or feed specification remains after overlay; an unavailable configured feed
+still counts as configured, but its current set is empty. If clearing lists leaves no effective
+predicate of any kind, reject the source at construction rather than treating empty trust as true.
+
+No provider/domain blacklist is built into generic hostname validation. A suffix is a namespace
+selection rule, not evidence of ownership. Public-ingress Bunny guidance is in §7.
+
+### 3.5 First successful resolution wins
+
+For each source, in list order:
+
+1. Evaluate every configured predicate against the original peer and as-yet-unmodified request.
+2. If any fails, continue to the next source.
+3. If all hold, parse its configured client header.
+4. If extraction fails, continue to the next source.
+5. On extraction success, select that source and stop the search.
+
+Only then mutate headers. A failed earlier source never changes what a later source reads.
+No remembered partial match can force rejection, override a later success, or prevent fallback.
+
+For two Bunny sources selecting different Pull Zone IDs, a request for the second zone passes
+through the first source's non-match and resolves with the second. If both sources fully match,
+the first with a valid client value wins. If the first's identity is malformed and the second's
+is valid, the second wins. More restrictive sources should precede broad fallback sources when
+that is the intended interpretation.
+
+Source selection is not authorization. In particular, a broad later source can intentionally
+accept traffic that an earlier account-specific source did not select. Requests that should be
+denied need a separate authorization middleware or ingress policy.
+
+## 4. IP and scheme parsing
+
+### 4.1 IPs and address sets
+
+- Parse the peer using `net.SplitHostPort`, then `netip.ParseAddr`; IPv6 host:port must be
+  bracketed. Require a nonempty decimal port in 0–65535. Do not guess around malformed addresses.
+- A client identity is exactly one header instance containing exactly one bare IP. Trim outer
+  HTTP optional whitespace (space/tab), then parse. Reject empty values, commas, quotes,
+  bracketed IPs, host:port, DNS names, and non-IP text as extraction failures.
+- Normalize valid addresses by removing an IPv6 zone and unmapping IPv4-mapped IPv6, then
+  serializing with `String()`. Zones describe an interface scope, not a portable client identity;
+  they are not forwarded and these logical addresses must not be used to initiate connections.
+- Private, loopback, link-local, CGNAT, and documentation addresses are permitted. Resolving an
+  internal client's IP is legitimate. Reject unspecified addresses, multicast, and the IPv4
+  limited broadcast address as extracted identities. Do not equate `IsGlobalUnicast` with
+  public Internet reachability.
+- Apply the same usable-host checks and canonicalization to the peer. A peer that cannot produce
+  a usable fallback follows §1's integration-error behavior.
+- Static entries and feeds use the same IP/CIDR parser. Exact addresses use the host rules above.
+  CIDRs have no zones and are masked before storage. A prefix inside the IPv4-mapped /96 space,
+  with length 96–128, is converted to IPv4 with 96 subtracted from its length. Reject mapped
+  prefixes shorter than /96 as ambiguous. Ordinary IPv6 prefixes retain their family.
+- Set membership is over canonical peers: IPv4 prefixes match unmapped IPv4, ordinary IPv6
+  prefixes match IPv6. A generic `::/0` does not also mean IPv4; configure both families if wanted.
+
+Use an immutable exact-address map plus a prefix slice. Canonical /32 and /128 entries can go
+into the exact map. Deduplicate equivalent entries. This is efficient for the measured presets;
+there is no generic guarantee of at most 22 prefix comparisons.
+
+### 4.2 Header and hostname predicates
+
+Predicates compare the values available in Go's request, not original wire bytes. Go's HTTP/1
+reader has already trimmed whitespace. `headerIn` applies no additional value normalization;
+numeric-looking values remain strings, and `"06498612"` differs from `"6498612"`.
+
+All trust-header predicates require exactly one instance; missing, empty, or duplicate values
+mean non-match, not HTTP rejection. A comma has no special list meaning for `headerIn`; only the
+configured whole string can match. Host predicates reject comma lists.
+
+Header names use valid HTTP token syntax and are canonicalized case-insensitively. Read named
+headers from `req.Header`; for host predicates only, `header: Host` explicitly reads `req.Host`.
+Other uses of `Host` are config errors rather than accidental empty header reads.
+
+Hostname normalization, applied identically to config values and request values:
+
+1. Trim outer space/tab; reject internal whitespace, lists, schemes, paths, and userinfo.
+2. Remove an optional single colon plus decimal port in 1–65535; reject malformed/empty ports.
+3. Remove one terminal DNS dot and lowercase ASCII.
+4. Require nonempty DNS labels of 1–63 ASCII letters/digits/hyphens, no leading/trailing hyphens,
+   and total hostname length at most 253. Reject IP literals, empty labels, wildcards, and
+   non-ASCII input. IDNs must be configured and supplied in their ASCII A-label form.
+
+Thus `EXAMPLE.COM.:443` becomes `example.com`. A suffix `example.com` matches both the apex and
+`a.example.com`, but not `evil-example.com`. No automatic public-suffix or provider ownership
+inference is performed.
+
+### 4.3 Original scheme is independent of peer transport
+
+`req.TLS != nil` describes peer→Traefik TLS. It cannot determine whether client→upstream was
+HTTP or HTTPS. Scheme is resolved separately after selecting the IP source; do not select a
+different IP source merely because its scheme metadata is missing or malformed.
+
+An optional source `scheme` object has `header` and `mode`:
+
+| Mode | Accepted parsed input |
+|---|---|
+| `single` | Exactly one header instance containing one token. |
+| `uniform-list` | Exactly one header instance containing one or more comma-separated tokens, all agreeing after normalization. |
+
+Trim space/tab around tokens and lowercase. Accept `http` and `https`; accept `ws` and `wss`
+as their HTTP and HTTPS transport equivalents. Empty members, unknown tokens, disagreement such
+as `https, http`, and duplicate header instances are failures. `https, https` resolves to HTTPS.
+This does not assign list positions to network hops or choose a leftmost/rightmost authority.
+
+Only the successfully selected source may supply scheme metadata. The operator must establish
+that its configured header is authoritative; peer-range membership alone does not prove a proxy
+overwrites client-supplied XFP. If no source succeeds, no scheme is configured, or scheme parsing
+fails, use peer transport (`https` for TLS, otherwise `http`) as the best available estimate.
+Keep a successfully extracted IP even when scheme falls back.
+
+Emit `X-Forwarded-Proto` as `http`/`https`, or `ws`/`wss` for an actual HTTP WebSocket upgrade
+(Connection contains Upgrade and Upgrade is websocket, case-insensitively). Do not label arbitrary
+upgrades as WebSocket. Do not rewrite `req.TLS` to pretend an upstream client's TLS terminated here.
+
+For a deployment that must distinguish missing metadata from Traefik's synthesized XFP, use an
+authoritative non-managed header. Mixed origin/client schemes and origin Host overrides cannot
+be recovered correctly from the origin connection alone.
+
+## 5. Request normalization
+
+The normalization algorithm is identical on successful-source and peer-fallback paths.
+Capture resolution inputs first; mutate the existing header map in place before calling next.
+Do not replace it with a clone and assume the outer logger follows that replacement.
+
+### 5.1 Identity outputs
+
+- Always set exactly one canonical `X-Real-Ip` to the effective IP; there is no disable switch.
+- If a source successfully resolved the IP, set `RemoteAddr = net.JoinHostPort(client, "0")`.
+- On peer fallback, reconstruct `RemoteAddr` from the canonical peer and its original port.
+  Ordinary direct requests stay equivalent; mapped/zoned spellings become consistent.
+- Delete XFF rather than setting it to an empty/nil sentinel. With Traefik's normal
+  `notAppendXForwardedFor: false`, the proxy appends the effective `RemoteAddr` host for the backend.
+
+Remove the following competing identity headers on both paths, plus every configured extraction
+header from every source, including those not selected:
+
+`Forwarded`, `X-Forwarded-For`, `X-Real-Ip`, `X-Client-Ip`, `X-Cluster-Client-Ip`,
+`X-Original-Forwarded-For`, `X-Originating-Ip`, `True-Client-Ip`, `Cf-Connecting-Ip`,
+`Cf-Connecting-Ipv6`, `Cf-Pseudo-Ipv4`, `Fastly-Client-Ip`, `Fly-Client-Ip`,
+`X-Azure-Clientip`, `X-Azure-Socketip`, `X-Appengine-User-Ip`.
+
+Compare header names case-insensitively with underscores treated as dashes when sweeping managed
+names, including configured inputs. This handles underscore aliases; it is not a universal
+backend-specific header-alias defense. Use Traefik's alias-header strategy where supported.
+
+This finite list cannot know every private application identity header. Configure that channel
+as an extraction input or remove it using a dedicated headers middleware. Downstream consumers
+must use the canonical identity rather than inventing an independent header precedence.
+
+### 5.2 Forwarding outputs and metadata
+
+Always remove incoming values and underscore aliases for the forwarding outputs below before
+writing the stated values. Source scheme inputs are consumed and removed across all sources.
+
+| Header | Output |
+|---|---|
+| `X-Forwarded-Proto` | Scheme resolved under §4.3, with WebSocket convention where applicable. |
+| `X-Forwarded-Scheme`, `X-Scheme` | Remove; v1 publishes one scheme channel rather than three. |
+| `X-Forwarded-Host` | Current `req.Host`; omit if empty. It is the host presented to Traefik, not a recovered original host. |
+| `X-Forwarded-Port` | Valid explicit decimal port from `req.Host`, otherwise 443/80 according to the resolved HTTPS/HTTP scheme. This is a best-effort authority port, not proof of the original listener port. |
+| `X-Forwarded-Prefix`, `X-Forwarded-Uri`, `X-Forwarded-Method` | Remove. No unverified original path/method is reconstructed. Later path/auth middleware may create its own values. |
+| `X-Forwarded-Server` | Remove. Backend routing does not require a synthesized server identifier. |
+| `X-Forwarded-Tls-Client-Cert`, `X-Forwarded-Tls-Client-Cert-Info` | Remove inbound assertions; a downstream certificate middleware may repopulate from `req.TLS`. |
+| `Cf-Visitor` | Remove: it is a competing scheme channel, including for Badger. |
+
+For IPv6 `req.Host`, use bracket-aware authority parsing; do not split on the first colon. If
+no valid explicit port is available, use the scheme default; never copy a malformed port header.
+An original nonstandard port or host hidden by a proxy override is outside v1's recovery contract.
+
+Preserve ordinary provider metadata such as `CF-IPCountry`, `CDN-Host`, `CDN-PullZoneId`,
+`CDN-RequestCountryCode`, `CDN-ServerId`, `Via`, and request IDs, including on direct requests.
+Their presence is not an assertion by Realclient that they are authentic.
+
+Deletion precedence is explicit: consumed identity/scheme inputs and future secret inputs are
+removed even if a trust predicate also read them. Metadata used only for matching is preserved.
+Reject a configured extraction/scheme header colliding with Host, connection/framing headers,
+or an output of the other role; allow the intended identity input `X-Real-Ip` and scheme input
+`X-Forwarded-Proto`. Do not permit a secret to share an identity/scheme output name.
+
+Operators must account for downstream mutation. Badger can repopulate XFF when its own trust
+branch is active. A headers/auth middleware can overwrite canonical headers. Realclient cannot
+enforce an invariant after arbitrary downstream rewrites; supported ordering/configuration is §7.
+
+## 6. Dynamic feed subsystem
+
+### 6.1 Feed specification and validation
+
+Each `trust.feeds` element is a complete object:
+
+| Field | Meaning/default |
+|---|---|
+| `url` | Required absolute HTTPS URL; no userinfo or fragment. |
+| `format` | Required `lines` or `json-array`. |
+| `refreshInterval` | Duration string; default `30m`, minimum `1s`. |
+| `minEntries` | Integer in 1–100,000; default 1; count distinct normalized IPs/prefixes. |
+
+Use explicit format, not content-type sniffing. `lines` accepts bare IPs/CIDRs, CRLF, blank lines,
+whole lines starting with # after trimming, and one initial UTF-8 BOM. No inline comments.
+`json-array` accepts one JSON array of strings, then whitespace and EOF; reject extra JSON,
+non-string values, and malformed entries. Both trim entry whitespace and use §4.1's parser.
+
+HTTP success is a fully read 200 body within a fixed 4 MiB decoded-body cap, with at most 100,000
+distinct entries, satisfying syntax and `minEntries`. Read enough to detect overflow rather than
+silently parsing a truncated prefix of the body. Reject the entire update on any bad entry.
+An empty response is failure, not an instruction to erase trust.
+
+There are no hardcoded public-address restrictions, Bunny-domain prohibitions, or /8-/19 prefix
+floors. Private feeds and broad aggregates are legitimate. Even /0 is syntactically valid trust
+configuration: its publisher can authorize every peer of that family. Such a feed should only be
+used if that is actually intended. Counts and parsing detect some accidents, not a compromised
+publisher replacing one valid address set with another.
+
+Fetch with normal certificate validation, a 15-second total client timeout, no redirects, no
+credential loading, and close response bodies on all paths. Feed URLs are operator configuration,
+not derived from requests. Format changes or redirected endpoints require explicit config updates.
+Retry failures after two minutes; successful refreshes use the configured interval with ±10%
+jitter. No per-request fetches, backoff framework, or provider-account discovery.
+
+### 6.2 Worker identity and lifetime
+
+Share workers through a mutex-protected package registry, **per Yaegi interpreter/plugin alias**.
+Worker identity is the structured tuple:
+
+`(exact URL string, format, parsed refresh interval, minEntries, cleaned absolute cache directory)`.
+
+The parser/cache schema version is also included when deriving a persistent cache key.
+Disabled persistence uses the empty string as the cache-directory component.
+Identical effective specifications share one worker, irrespective of source/instance name.
+Different specifications get different workers; there is no promise of one worker per URL.
+This intentionally avoids first-constructor-wins policy and live mutation of another instance's
+validation or polling settings.
+
+Each worker owns immutable settings, its HTTP client, one serial fetch loop, and an
+`atomic.Value` containing an immutable snapshot. Publish an initialized empty snapshot before
+exposing the worker; never type-assert an uninitialized atomic value. Readers never mutate a
+published map/slice. Use no generic `atomic.Pointer[T]`.
+
+Insert one initializing registry entry under the mutex; release the mutex for cache I/O.
+Constructors encountering it share its initialization completion. Load and validate the cache,
+publish it if usable, mark initialization complete, then run one background loop with an immediate
+refresh. The constructor waits only for local initialization, not network availability.
+No global lock is held across cache or HTTP I/O. Failed local initialization still releases waiters.
+
+Workers deliberately live until interpreter/process exit and use a worker-owned background
+context with per-fetch deadlines, not the first router's `New(ctx)` context. Traefik cancels
+router-construction contexts on reload; attaching shared polling to one would strand other users.
+No request or handler is retained by a worker.
+
+Changing the specification creates a new worker. Removing a source immediately removes that
+source from new handlers, but its old worker remains polling; old in-flight handlers retain their
+own settings. Repeated identical reloads do not add workers. Repeated distinct configurations can
+accumulate workers, clients, and cache files until restart. This is a stated v1 lifecycle cost;
+routine stable configurations do not need refcounting, teardown watchers, or a scheduler framework.
+Different plugin aliases/processes may each fetch the same URL.
+
+### 6.3 Cache, ETag, and last-known-good
+
+Persistence is optional. Require an absolute cache directory when enabled; clean it before keying.
+Use a schema-versioned hash of worker identity for the filename, never a URL path. Traefik needs
+write permission. An unreadable/unwritable cache is logged and treated as unavailable, not as a
+failure of the middleware configuration.
+
+Cache one complete validated representation with its identity/schema, normalized entries, ETag,
+and last successful validation time. On load, validate identity/schema, size, entries, and current
+`minEntries` again. Corrupt/mismatched data is ignored. Stale valid data remains eligible: v1 LKG
+has no automatic expiration, and an immediate refresh attempts to replace it.
+
+Publish entries and accepted validator as one coherent snapshot. An invalid 200 must update
+neither. Send `If-None-Match` only when there is a usable accepted representation and nonempty ETag.
+A 304 retains the set; without a usable representation, retry unconditionally instead of
+declaring success. A valid 200 without ETag clears the old validator.
+
+Write cache updates to a unique temporary file in the same directory, sync and close it, then atomically
+rename; use restrictive file permissions. A crash can lose a recent update but must not turn a
+partial write into accepted trust. Cache-write failure does not discard a valid in-memory update.
+Concurrent processes have separate memories; complete atomic file replacement prevents torn
+reads but does not promise cross-process freshness ordering. Prefer separate cache directories
+for separately managed Traefik processes; no interprocess lock service is added.
+
+### 6.4 Availability is information, not authorization
+
+A source uses the union of static entries and each available feed snapshot. One feed can refresh
+while another retains LKG or has never loaded. There is no multi-feed transaction or readiness
+barrier. Static membership remains usable even if every feed is unavailable.
+
+An unknown/new edge cannot match a range that has not been learned. That request tries other
+sources, then uses its peer IP. Missing one address family can therefore reduce resolution
+accuracy for that family. The same limitation exists during cold start, after provider expansion,
+or while a stale cache misses new addresses. No guessed recognition or blanket denial fixes it.
+
+LKG preserves availability but also retains removed addresses until a successful refresh;
+unbounded stale retention is an explicit tradeoff. Removing a feed/source from config removes
+its trust from new handlers even if its worker/cache still exists.
+
+Log feed failures, recovery, cache failures, and new worker settings without response bodies or
+credentials. Ordinary per-request fallback is normal operation; do not emit an ERROR for every
+direct request. Optional debug diagnostics may record source/failure reason and peer without
+dumping headers. Metrics/counters can follow later.
+
+## 7. Presets and downstream compatibility
+
+### 7.1 Provider presets
 
 ```yaml
 # preset: bunny
 trust:
   feeds:
-    - { url: "https://api.bunny.net/system/edgeserverlist/plain", format: lines,      minEntries: 100 }
-    - { url: "https://api.bunny.net/system/edgeserverlist/ipv6",  format: json-array, minEntries: 50  }
-  refreshInterval: 30m
-extract: { header: X-Real-Ip, mode: single }
+    - url: https://api.bunny.net/system/edgeserverlist/plain
+      format: lines
+      refreshInterval: 30m
+      minEntries: 100
+    - url: https://api.bunny.net/system/edgeserverlist/ipv6
+      format: json-array
+      refreshInterval: 30m
+      minEntries: 50
+extract: {header: X-Real-Ip, mode: single}
+# No default authoritative scheme assumption; see below.
 
 # preset: cloudflare
 trust:
   feeds:
-    - { url: "https://www.cloudflare.com/ips-v4", format: lines, minEntries: 10 }
-    - { url: "https://www.cloudflare.com/ips-v6", format: lines, minEntries: 5  }
-  refreshInterval: 12h
-extract: { header: Cf-Connecting-Ip, mode: single }
+    - url: https://www.cloudflare.com/ips-v4
+      format: lines
+      refreshInterval: 12h
+      minEntries: 10
+    - url: https://www.cloudflare.com/ips-v6
+      format: lines
+      refreshInterval: 12h
+      minEntries: 5
+extract: {header: Cf-Connecting-Ip, mode: single}
+scheme: {header: X-Forwarded-Proto, mode: single}
 ```
 
-### 4.1 Trust model
-
-A source's `trust` is a small fixed set of predicates in two families, deliberately **not** a
-boolean-expression DSL.
-
-```
-# peer-address family — jointly ONE predicate
-  static:        [CIDR|IP, ...]        # literal list
-  feeds:         [FeedSpec, ...]       # dynamically refreshed sets
-
-# header family — each an independent predicate
-  headerEquals:  {name, valueFrom}     # header == secret, constant-time
-  headerIn:      {name, values}        # header ∈ exact set, byte-compare
-  hostExact:     {header, values}      # header ∈ set, DNS-host normalized
-  hostSuffixes:  {header, suffixes}    # header ∈ domain namespace, DNS-label semantics (WEAK)
-```
-
-Each predicate is independently sufficient; none is privileged. What differs is what each one
-*proves* and what it assumes about the path the request took:
-
-| Predicate | What it proves | Provenance assumption | Phase |
-|---|---|---|---|
-| `static` | peer address ∈ literal list | Socket peer — unforgeable at the plugin. | v1 |
-| `feeds` | peer address ∈ refreshed set | Socket peer — unforgeable; trust in the feed publisher (§9.5). | v1 |
-| `headerIn` | header ∈ exact set | Header is only authoritative if something upstream guarantees it. | v1 |
-| `hostExact` | host header ∈ set (DNS-normalized) | Same. For `CDN-Host`, provider-authenticated **only if the request traversed Bunny**. | v1 |
-| `hostSuffixes` | host header ∈ domain namespace | Same, and weaker still — not ownership proof (§4.2). | v1 |
-| `headerEquals` | header == shared secret | Anyone holding the secret; unforgeable without it, on any path. | v1.1 |
-
-**The plugin does not police these combinations.** It cannot know a deployment's surrounding trust
-guarantees: a header that is trivially forgeable on the public Internet may be entirely authoritative
-behind another authenticated proxy, a private network, or a provider that overwrites it. So
-`hostSuffixes` alone, or `headerIn` alone, are legal configurations, and the documentation's job is
-to explain provenance rather than to forbid.
-
-The one place this gets concrete guidance is the Bunny preset: **`CDN-*` metadata is only
-provider-authenticated when the request has actually traversed Bunny** (F12), so a `CDN-Host` or
-`CDN-PullZoneId` predicate should be combined with Bunny peer-range trust there. That is deployment
-guidance in the preset docs, not a generic validation rule.
-
-**Composition rules — the whole model:**
-
-1. `static` and `feeds`, when both present, are **unioned** into a single peer-address predicate.
-   They answer one question ("is this peer the provider?") from two data sources.
-2. Every predicate that is configured must hold. Plain AND.
-3. **At least one predicate is required.** A source with an empty `trust` is a config error.
-4. There is no `or`, no nesting, no expression language. If a deployment needs alternatives, it
-   writes two sources — the ordered list already provides that, with first-match semantics.
-
-**No anchor of any kind is required.** Any single predicate may stand alone — `feeds` only, `static`
-only, `headerEquals` only, `headerIn` only, `hostExact` only, `hostSuffixes` only — or any ANDed
-combination. An authenticated header as the sole mechanism is the right model for an upstream with
-no stable address range (`headerEquals` lands in v1.1):
+**Bunny:** prior measurements establish overwrite behavior for IP headers in the tested stock
+path. They also observed `https, https` for XFP with Edge Rules/Scripting active; neither its hop
+meaning nor resistance to client influence was established. The preset therefore does not
+silently authenticate XFP. A deployment that establishes authoritative scheme forwarding can add:
 
 ```yaml
-- name: authenticated-upstream
-  trust:
-    headerEquals: { name: X-Origin-Auth, valueFrom: "file:/run/secrets/upstream_auth" }
-  extract: { header: X-Real-Ip, mode: single }
+scheme: {header: X-Forwarded-Proto, mode: uniform-list}
 ```
 
-and compositions work the obvious way:
+Alternatively, set a non-managed scheme header from trusted edge metadata and use `single`.
+Until then the preset uses origin transport as an acknowledged estimate. Independently measuring
+stock Bunny scheme overwrite behavior could justify adding a scheme default in a later revision.
 
-```yaml
-- name: bunny-hardened
-  preset: bunny                                   # supplies trust.feeds + extract
-  trust:
-    headerEquals: { name: X-Origin-Auth, valueFrom: "file:/run/secrets/bunny" }
-```
-which is `feeds AND headerEquals`.
+**Cloudflare:** the single-header preset requires Pseudo IPv4 not to use "Overwrite Headers",
+otherwise `CF-Connecting-IP` is synthetic and the real IPv6 is in `CF-Connecting-IPv6`.
+Disable that mode rather than adding a provider-specific fallback branch in v1. Header-removal
+transforms cause peer fallback. Same-zone Workers can alter the identity feeding
+`CF-Connecting-IP`; cross-zone Worker subrequests use Cloudflare's documented shared Worker IP.
+The preset cannot invent the missing visitor identity. Original XFP is useful only if Traefik's
+entrypoint preserved it; with secure stripping use a trusted non-managed equivalent or accept
+the origin-transport estimate.
 
-### 4.1.1 Header predicates vs host predicates
+Provider feed membership means "this peer is in the published set," not "this request belongs to
+my account." Another Bunny customer can point a zone at the origin and customize identity headers.
+This residual provenance assumption is accepted by feed-only deployments.
 
-`headerEquals` / `headerIn` operate on **raw header bytes**. `hostExact` / `hostSuffixes` apply
-**DNS-host normalization** first: lowercase, strip a trailing dot, strip any port, reject empty or
-non-hostname values.
+Optional Bunny selection:
 
-These are separate families on purpose. `CDN-PullZoneId` is an opaque numeric identifier and must
-**not** be run through hostname normalization merely because `CDN-Host` is — a Pull Zone ID has no
-labels, no trailing dot and no port, and treating it as a hostname would be a category error that
-invites surprising matches. Use:
+- `headerIn` on `CDN-PullZoneId` selects configured zones.
+- `hostExact` on `CDN-Host` selects registered names; its account-binding interpretation still
+  depends on the untested origin-Host override behavior in Appendix A.
+- `hostSuffixes` filters a namespace but is not ownership proof: Bunny accepted unverified
+  custom names. The shared `b-cdn.net`/`bunny.run` namespaces identify no particular account.
+- A shared-secret header may be supported in v1.1; it is neither required nor emulated by storing
+  a secret in `headerIn` (which has different logging/comparison semantics).
 
-```yaml
-trust: { headerIn:   { name: Cdn-Pullzoneid, values: ["6498612"] } }   # opaque identifier
-trust: { hostExact:  { header: Cdn-Host,     values: ["btest.oandc.fun"] } }  # hostname
-```
+On public ingress, pair provider metadata selection with provider peer ranges. Metadata-only
+selection remains legal for deployments with an independent provenance guarantee.
 
-`headerIn` is the generic primitive; `hostExact` is the hostname-aware specialization. Neither is
-recommended as a default (§4.2).
+### 7.2 Request-time consumers
 
-### 4.2 Host predicates: a spectrum, not a binary
+Use `Realclient → CrowdSec → Badger/other auth → backend`, with any Traefik certificate-header
+producer after Realclient. No intervening middleware should restore an untrusted identity channel.
 
-All of these are optional ANDed predicates over a **protected** provider header. None is enabled by
-default; the default posture is `feeds` only. They differ in what they actually prove:
+**CrowdSec bouncer/AppSec:** keep the default forwarded header name `X-Forwarded-For`.
+No CDN ranges need to be added to `forwardedHeadersTrustedIps`; with XFF absent the inspected
+bouncer falls back to `RemoteAddr`. AppSec uses the same resolved address.
+`clientTrustedIps` is a separate enforcement bypass, not upstream trust; leave it empty unless
+that bypass is explicitly desired. If resolution fell back to a POP, enforcement necessarily
+uses the POP too. The middleware cannot recover an unavailable end-user identity.
 
-```
-range only
-    provider-level trust
-    "this came from Bunny infrastructure"
+**Badger:** recommend `disableDefaultCFIPs: true`, `trustip: []`, `customIPHeader: ""`.
+It then uses the normalized address without reinterpreting CDN headers or rebuilding XFF.
+Its default trust branch can run whenever the effective client belongs to those CIDRs; this
+statement does not rely on an unverified claim that all WARP egress ranges equal CDN ranges.
 
-range + host suffix
-    cheap, weak defence in depth
-    NOT proof of account or domain ownership
+**mtlswhitelist:** canonical `X-Real-Ip` supports its IP-range rule. Its certificate branch reads
+`req.TLS.PeerCertificates`, which is untouched. Test the no-certificate IP rule separately from
+the certificate branch. Existing Traefik TLS options still govern requesting/verifying client
+certificates; a certificate from a CDN connection is not the original user's certificate.
 
-range + exact protected hostname, or Pull Zone ID
-    stronger, provider-enforced binding
-    per-resource maintenance
+**Backends:** with normal Traefik XFF append and no intervening header reconstruction, receive a
+single effective-IP XFF entry and canonical X-Real-Ip. Preserve body streaming, trailers and
+upgrade mechanics as provided by the supported Traefik release; Realclient adds no protocol proxy.
 
-range + shared secret (headerEquals)
-    explicit account binding
-    per-zone setup
-```
+## 8. Optional CrowdSec detection from Traefik access logs
 
-**`hostSuffixes` — weak defence in depth, with an honest label.** An earlier draft removed this
-outright after F16 showed Bunny performs no DNS-ownership check. That conclusion was too absolute.
-It is true that a determined Bunny customer can register some unused label under `lochnair.net` on
-their own zone and defeat the predicate, so it is **not** authentication and must never be
-described as such. But it costs essentially nothing when many zones already share a few domain
-families, it raises required effort, and it filters unrelated Bunny traffic and misconfiguration —
-including our own zones accidentally pointed at the wrong origin. For a homelab that is a
-reasonable trade. Implement it; document it as weak.
+This section is a separate deployment recipe, not a Realclient feature or adoption prerequisite.
+Running the bouncer does not require acquiring Traefik logs. If those logs are acquired under
+insecure forwarding, however, the stock parser's header-influenced `ClientHost` is not a safe
+source for automatic decisions. Either install an attribution recipe or do not use that stream
+for IP decisions.
 
-Matching must use DNS-label semantics, never `strings.HasSuffix`:
-```
-match(host, suffix) := lower(host) == lower(suffix)
-                    || strings.HasSuffix(lower(host), "." + lower(suffix))
-```
-Normalize first: lowercase, strip a trailing dot, strip any port, reject empty or non-hostname
-values. `evil-lochnair.net` must not match `lochnair.net`.
+### 8.1 What the log actually says
 
-Config validation must **reject** `b-cdn.net` and `bunny.run` as suffixes. Every Bunny customer's
-zone ends with those, so accepting them would manufacture a false sense of protection.
-
-**`hostExact` — provider-enforced binding.** Now supported by measurement (F16): hostname → Pull
-Zone is globally unique, and re-registering an in-use hostname on a second zone is rejected. So an
-attacker cannot claim a hostname we already serve.
-
-```yaml
-trust: { hostExact: { header: Cdn-Host,       values: ["btest.oandc.fun", "www.example.net"] } }
-trust: { headerIn:  { name:   Cdn-Pullzoneid, values: ["6498612"] } }
-```
-Note the Pull Zone ID uses `headerIn`, not `hostExact` — see §4.1.1.
-
-One property remains untested (§9.4): whether `CDN-Host` follows the *routed* hostname or a zone's
-origin-Host override. It matters because an attacker does not need a matching hostname to reach the
-right router — they can override the origin `Host`. If `CDN-Host` is computed from the received
-hostname (which F12's protection of `CDN-*` and all observed behaviour suggest), the predicate
-holds; if it follows the override, only the Pull Zone ID form retains value.
-
-Neither `hostExact` nor the `headerIn` Pull Zone ID form is recommended as a default: keeping
-per-host or per-zone allowlists
-synchronized by hand works directly against the low-maintenance goal that motivates this project.
-Forgetting an entry fails **closed** (403), so the failure is loud rather than silent — which makes
-it a defensible opt-in, not a default.
-
-`*.b-cdn.net` / `*.bunny.run` names are globally unique, so *exact* matching on them is sound, but
-it is per-zone maintenance with no advantage over the Pull Zone ID. They are never a namespace.
-
----
-
-## 5. Range-feed subsystem (trimmed for v1)
-
-```go
-var registry = struct {
-    mu    sync.Mutex
-    feeds map[string]*feed   // key: url + "|" + format
-}{feeds: map[string]*feed{}}
-
-type feed struct {
-    spec    FeedSpec
-    current atomic.Value // *rangeSet (immutable)
-    etag    atomic.Value // string
-}
-
-type rangeSet struct {
-    exact    map[netip.Addr]struct{}
-    prefixes []netip.Prefix
-    loadedAt time.Time
-}
-```
-
-**Kept in v1** — the properties that make it reliable:
-- Never fetch per request; reader path is one `atomic.Value.Load()`.
-- **Dedupe, don't refcount.** `New()` re-runs on every reload and there is no shutdown hook (F8).
-  Key by URL, start at most one updater per URL, let it live for the process.
-- Build the whole new set, then `Store` — atomic publication, no partial visibility.
-- **Last-known-good on any failure**: keep the previous set, log, retry.
-- Strict parsing: HTTP 200 required, body size cap, and **every entry must parse or the whole
-  payload is rejected**.
-- Catastrophic-corruption guards, as fixed constants rather than knobs: reject `0.0.0.0/0` and
-  `::/0`; reject private / loopback / link-local / unspecified entries; reject prefixes shorter
-  than `/8` (v4) or `/19` (v6). Cloudflare's shortest are `/13` and `/29`, so there is ample margin.
-- `minEntries` per feed (a preset field, not a user-facing knob).
-- ETag conditional GET — Bunny serves one, which makes refresh nearly free.
-- Fixed `refreshInterval` with ±10% jitter, plus a single `retryInterval` constant (2 min) used
-  after a failed attempt. No backoff curve.
-- Explicit `http.Client{Timeout: 15s}`.
-- **Independence**: one goroutine and one `atomic.Value` per feed. A source's set is the union of
-  its feeds'; one broken feed leaves the other's LKG usable; one broken source never affects
-  another.
-
-**Cold start, two layers:**
-1. Read the disk cache synchronously — local, instant.
-2. If absent, perform **one** bounded synchronous fetch (5s budget) before returning from `New()`.
-   Only ever happens once per URL per process, because of the registry.
-3. Otherwise: empty set, ERROR on every refresh attempt until first success.
-
-A third layer — a bundled compiled-in snapshot — was considered and dropped. Disk cache earns its place — a homelab
-Traefik restarting before the WAN is up is a realistic scenario, and an empty Bunny set means POP
-addresses get treated as clients. Note the §8 CrowdSec whitelist independently covers that window.
-
-**Deferred out of v1**: shrink-percentage heuristics, configurable prefix floors, exponential
-backoff, and general feed-policy knobs. The point is a reliable normalizer, not a service-discovery
-framework inside Yaegi.
-
----
-
-## 6. Normalization and header sanitization
-
-Read before deleting:
-
-1. Read `peer` from `req.RemoteAddr`.
-2. Evaluate trust predicates and `extract` (reads identity, host and secret headers).
-3. Delete all identity headers, *including the ones just read*.
-4. `req.Header.Set("X-Real-Ip", client)` — required by F7, and the access-log channel in §8.
-5. Rewrite `RemoteAddr` (below).
-
-Always `netip.ParseAddr` → `.Unmap()` (so `::ffff:1.2.3.4` cannot evade a ban on `1.2.3.4`) →
-strip IPv6 zone → re-`String()`. Never propagate an unvalidated string.
-
-### 6.1 `RemoteAddr` port
-
-**The invariant is only that `RemoteAddr` remains valid `host:port`** (F4 — CrowdSec bans every
-request if `SplitHostPort` fails). The port value itself carries no meaning for any consumer
-inspected (F15): all of them split and discard it.
-
-- **Normalized requests**: `net.JoinHostPort(client, "0")` → `1.2.3.4:0`, `[2001:db8::1]:0`.
-  Preferred, because retaining the CDN peer's ephemeral port yields a hybrid tuple of real client
-  IP + POP source port — the same hybrid identity the HAProxy design deliberately avoided. `:0` is
-  honest: there is no known client port.
-- **Direct requests**: leave `req.RemoteAddr` untouched.
-
-This is a cleanliness choice, **not a required invariant**. Preserving the observed peer port would
-work equally well and is a legitimate implementation decision.
-
-### 6.2 Delete list (both paths, direct and proxied)
-
-`Forwarded`, `X-Forwarded-For`, `X-Real-Ip`, `X-Client-Ip`, `X-Cluster-Client-Ip`,
-`X-Original-Forwarded-For`, `X-Originating-Ip`, `True-Client-Ip`, `Cf-Connecting-Ip`,
-`Cf-Connecting-Ipv6`, `Cf-Pseudo-Ipv4`, `Cf-Visitor`, `Cf-Ipcountry`, `Fastly-Client-Ip`,
-`Fly-Client-Ip`, `X-Azure-Clientip`, `X-Azure-Socketip`, `X-Appengine-User-Ip`, plus every
-configured `extract.header` across all sources.
-
-**Deletion is decided by the header's *role*, not by the fact that the plugin read it.** Three roles,
-three rules:
-
-| Role | Predicate / source | Action |
-|---|---|---|
-| Client identity | `extract.header`, plus the fixed list above | **Removed**, then a single canonical `X-Real-Ip` is set. Required to establish one effective client identity. |
-| Authentication secret | `trust.headerEquals.name` | **Stripped after use.** It is a credential; no backend has any business seeing it. |
-| Provider metadata used for matching | `trust.headerIn.name`, `trust.hostExact.header`, `trust.hostSuffixes.header` (e.g. `CDN-Host`, `CDN-PullZoneId`) | **Left untouched.** Inspecting a header is not a reason to delete it (§6.3). |
-
-Sweep `_`-variants the way Traefik's `isManagedXHeader` does — Go's server preserves `X_Real_IP`
-as a distinct map key.
-
-### 6.3 Scope limit: what this plugin does *not* touch
-
-**Mutation principle.** The plugin only removes or rewrites a header where doing so is required to
-(a) establish one consistent effective client identity, or (b) reconstruct Traefik-managed
-forwarding state that posture B leaves client-controllable (§6.4). Nothing else.
-
-This is not a generic header-security layer. An earlier rule requiring `CDN-*` metadata to be
-stripped on the direct path is **withdrawn**. Those headers already reach backends today under stock Traefik;
-removing them would change unrelated downstream-visible metadata for no benefit to the project's
-goal, and would make the plugin's blast radius larger than its purpose.
-
-The plugin **reads** provider metadata (`CDN-Host`, `CDN-PullZoneId`, …) when a configured trust
-predicate requires it, and otherwise leaves it entirely alone — on every path, trusted or direct.
-
-Consequence worth stating plainly, unchanged by this decision: because `CDN-*` is not in Traefik's
-`XHeadersSet`, a direct client can send arbitrary `CDN-*` headers. That is true today with or
-without this plugin, and a backend that trusts `CDN-RequestCountryCode` from an unauthenticated peer
-is making its own mistake — not one this plugin should silently paper over.
-
-**Deployment guidance, not a validation rule.** On *public* ingress, `CDN-*` is
-provider-authenticated only once provider provenance has been established, so the sensible and
-default Bunny posture combines a `CDN-Host` or `CDN-PullZoneId` predicate with Bunny peer-range
-trust. That guidance belongs in the Bunny preset documentation. The generic plugin still allows
-`headerIn`, `hostExact`, `hostSuffixes` and the rest to stand alone, because a deployment may have
-its own guarantees — a private network, or an authenticated proxy in front — that make such a header
-authoritative. See §4.1 for the per-predicate provenance table. No validation restriction is
-imposed.
-
-### 6.4 Additional hygiene under `entrypointForwardedHeaders: insecure`
-
-Delete and re-assert, mirroring Traefik's `rewrite()`: `X-Forwarded-Proto` / `-Scheme` /
-`X-Scheme` (from `req.TLS`, with `ws`/`wss` for upgrades), `X-Forwarded-Host` (from `req.Host`),
-`X-Forwarded-Port`, `X-Forwarded-Prefix`, `-Uri`, `-Method`, `-Server`. Unconditionally delete
-**`X-Forwarded-Tls-Client-Cert` and `X-Forwarded-Tls-Client-Cert-Info`** — otherwise a client
-forges certificate identity for any downstream `passTLSClientCert` consumer.
-
-Not deleted on the trusted path: `Via`, `CDN-ServerId`, `CDN-RequestCountryCode` — metadata, useful
-for diagnostics.
-
----
-
-## 7. Fail-closed semantics
-
-| Situation | Action |
+| Field | Meaning |
 |---|---|
-| No source matches `peer` | direct; `client = peer`; `RemoteAddr` untouched |
-| Source matched; identity header absent | **403** (`onTrustedButInvalid`, default `reject`) |
-| Header unparseable, empty, or whitespace | **403** |
-| Header present more than once (`len(Header.Values(h)) > 1`) | **403** — `Get` returns only the first; classic bypass. (Bunny collapses duplicates per F11, so this can only indicate a non-Bunny path.) |
-| Comma / multiple values in `mode: single` | **403** |
-| Extracted address is private / loopback / unspecified | **403** unless `allowPrivateClient` |
-| The peer-address predicate matches but another configured predicate (`hostSuffixes`, `hostExact`, `headerIn`, `headerEquals`) fails | **403** — "known CDN, failed additional check" is a conflict. Falling through to direct would make the POP the client and get it banned. |
-| Peer matches no range at all, wrong/absent secret | direct — nothing suspicious was established |
-| Feed never loaded (cold start) | source cannot match → treated as direct; ERROR on every refresh until first success; window mitigated by disk cache and by the §8 whitelist |
-| Rejection response | bare status, empty body, no echo of input; `next` **not** called; **all identity headers deleted and `X-Real-Ip` left unset** (see §8.2: an unset canonical header is what makes the log path drop the event instead of attributing it to a POP). Attribution lives in the plugin's own structured log line. |
+| `ClientAddr` | Pre-router-middleware peer address, including port; subject to earlier transport configuration, not incoming HTTP identity headers. |
+| `ClientHost` | Pre-middleware value, overridden by incoming XFF when present. Do not use it for this integration. |
+| `RouterName` | Router execution metadata, including parent/child chains. Presence alone does not prove Realclient ran. |
+| `request_X-Real-Ip` | Header map value at logging time. It can be normalized, Traefik-synthesized, or client-supplied on a bypass path. |
 
-Never emit a `RemoteAddr` the plugin did not validate. On internal error, prefer 403 over guessing.
+Realclient always emits a canonical peer identity on ordinary resolution failure. There is no
+need to signal failure by deleting X-Real-Ip, distinguish "direct" from "unresolved proxy" using
+a marker, or make the HTTP request fail so that the parser can classify it.
 
----
+### 8.2 Minimum recipe for effective-IP attribution on covered paths
 
-## 8. CrowdSec: two independent IP paths
+No response marker is required if the deployment accepts an explicit, tested coverage contract:
 
-A naive reading — "CrowdSec needs zero configuration" — is correct **only** for the request-time
-path. It misses that this deployment also feeds Traefik access logs to CrowdSec via the
-`crowdsecurity/traefik` collection, which resolves identity by a completely different route.
+1. Realclient is first configured middleware on every acquired root router/entrypoint and runs
+   once. No later middleware replaces canonical identity with untrusted data.
+2. Retain required core fields and the canonical request header:
 
-### 8.1 The two paths
+   ```yaml
+   accessLog:
+     format: json
+     fields:
+       defaultMode: keep
+       headers:
+         defaultMode: drop
+         names:
+           X-Real-Ip: keep
+   ```
 
-| | Remediation (bouncer + AppSec) | Detection (log acquisition → scenarios) |
-|---|---|---|
-| Mechanism | HTTP middleware, request-time | Traefik access log → `crowdsecurity/traefik-logs` parser |
-| IP source | `RemoteAddr` once inbound XFF is deleted (F5) | `source_ip` = rightmost element of `ClientHost` (F14) |
-| Sees plugin output? | **Yes** | **No** — `ClientHost` is frozen at entry (F10) |
-| Status | Correct, zero config | **Wrong under both postures** |
+3. Install **one local replacement JSON Traefik parser in s01-parse**, retaining the stock
+   parser's other useful HTTP fields but replacing attribution with the table below. Disable
+   the stock Traefik parser for this acquisition; do not run both and hope filename order fixes
+   the result. Keep normal s02 enrichment/whitelists after the local parser.
+4. Exclude status 400 and 421 events from IP decisions. These are the verified ordinary
+   pre-configured-middleware router rejections: recursion/encoded path (400) and SNI mismatch
+   (421). Conservatively exclude statuses below 200, 5xx, and missing/malformed status too;
+   protocol transitions and abnormal error paths are outside this small recipe.
 
-Under posture A: XFF deleted at entry → `ClientHost` = socket peer → CrowdSec detection attributes
-all CDN traffic to POP addresses and eventually bans a POP, blackholing Bunny.
-Under posture B: XFF survives → correct for Bunny traffic, but **client-controllable on direct
-traffic** → an unauthenticated remote party can cause an arbitrary third-party IP to be banned, and
-that ban *is* enforced by the bouncer against the real owner.
+The local parser applies these rules in order, before setting `remote_addr`/`source_ip`:
 
-Both are unacceptable. The fix is required regardless of posture.
+| Event | Attribution/action |
+|---|---|
+| Excluded/invalid status or malformed required JSON fields | Discard from the detection pipeline. |
+| RouterName absent/empty | Parse the host from ClientAddr; ignore X-Real-Ip and XFF even if present. |
+| RouterName present, valid single canonical X-Real-Ip | Use that header as the effective IP under the coverage contract. This includes normal peer fallback. |
+| RouterName present, missing/invalid canonical header | Discard; deployment contract failed. Do not guess from ClientHost. |
 
-### 8.2 Recommended fix — log the normalized header, teach the parser to use it
+Set the local parser's `remote_addr` and `source_ip` consistently before moving to s02.
+For discarded events, use a tested parser filter/drop path so they cannot fall into the stock
+parser. No source-IP enrichment or whitelist should run first on the old value. Do not use
+`onsuccess: next_stage` in an early s02 override that accidentally skips remaining enrichment.
 
-Viable because of F10: `Request.headers` is a live reference serialized after the chain, so a
-header the plugin sets appears in the log. F14 confirms the field naming (`request_User-Agent` is
-already consumed by the stock parser).
+ClientAddr parsing must handle `[2001:db8::1]:443`, normalize mapped IPv4, and remove zones.
+Validate header IPs rather than feeding arbitrary text to GeoIP/scenarios. Keep IPv6 addresses
+whole; do not use `Split(ClientAddr, ':')[0]`. The local parser must also avoid retaining the
+stock parser's broken IPv6 `dest_addr` split or treating ClientAddr as an actual destination.
 
-**Traefik** (static config):
-```yaml
-accessLog:
-  format: json
-  fields:
-    headers:
-      names:
-        X-Real-Ip: keep
-```
+Why this is smaller than an execution-proof protocol: the resolver now normalizes fallback
+requests too, and the known ordinary pre-plugin rejection statuses can simply be excluded.
+There is no need for a new request/response header, cryptographic marker, response-writer wrapper,
+or additional plugin-to-CrowdSec channel.
 
-**CrowdSec** — a small parser at `s02-enrich`, after the stock Traefik parser, overriding
-`source_ip` from the canonical header:
-```yaml
-onsuccess: next_stage
-filter: "evt.Parsed.program startsWith 'traefik' && evt.Unmarshaled.traefik['request_X-Real-Ip'] != nil"
-statics:
-  - meta: source_ip
-    expression: "evt.Unmarshaled.traefik['request_X-Real-Ip']"
-```
+The cost is deliberate loss of otherwise legitimate backend/middleware 400, 421, 5xx and upgrade
+events. The status exclusions are not a universal proof against new upstream paths, panics, or
+incorrect middleware placement. Pin and test the deployed Traefik version and chain; re-audit
+when upgrading. Perfect transparent attribution for every Traefik log event is not promised.
+The parser recipe is a design contract, not runtime-validated YAML; §9 gates publishing it as a
+supported optional integration.
 
-**It must never fall back to `ClientHost`.** `ClientHost` is frozen pre-middleware (F10) and is
-either the CDN POP address or a client-forged XFF value — both would let a request that *failed*
-normalization create a decision against the wrong party.
+### 8.3 Peer attribution and unresolved upstreams
 
-But a blanket drop of everything lacking the canonical header would be wrong too: it would discard
-scanner and probe traffic that never matched a router, which is precisely what the detection path
-exists to catch. F18 establishes that the two cases are distinguishable, so the rule is three-way:
+If the coverage contract cannot be maintained, the simpler trustworthy recipe is a local parser
+using the host of ClientAddr for every event and ignoring both ClientHost and identity headers.
+This needs no extra logged header, but identifies proxies as proxies rather than recovering users.
+Backend logs with known canonical identity are another option; neither is a core design blocker.
 
-| `RouterName` | `request_X-Real-Ip` | Meaning | Action |
-|---|---|---|---|
-| present | present | normalized | `source_ip` = the header |
-| **absent** | absent | no router matched (404 probe) | `source_ip` = host of `ClientAddr` — socket-backed, unspoofable |
-| present | **absent** | normalizer rejected, or did not run | **drop; no decision** |
+Even the effective-IP recipe attributes unmatched CDN probes and unresolved CDN traffic to their
+peers. If banning a shared upstream is undesirable, exclude candidate source IPs belonging to a
+maintained upstream set before creating decisions. That set is optional integration policy,
+independent of Realclient's resolution feeds. It can lag, and unknown edges remain unknowable.
+For deployments demanding no upstream bans without reliable ranges, omit peer-attributed
+proxy-ambiguous events or use a better log source; do not claim perfect coverage.
 
-The second row is what keeps probe detection working. The third is what makes §7's rejection rule
-(delete identity headers, leave `X-Real-Ip` unset) effective: a plugin-rejected request produces no
-canonical header *and* has a `RouterName`, so it is dropped rather than attributed to a POP.
-Attribution for those events lives in the plugin's own structured log.
+The useful three-way distinction is therefore:
 
-Sketch of the drop rule, to be written as a whitelist or an `evt.Whitelisted` static:
+- Matched and covered: use the canonical effective identity, whether extracted or peer fallback.
+- Unmatched: use the logged peer, independently of request headers.
+- Paths that may precede normalization or violate the coverage contract: exclude from IP decisions.
 
-```yaml
-name: local/traefik-unnormalized
-description: "Drop Traefik events that matched a router but were not normalized"
-filter: >
-  evt.Parsed.program startsWith 'traefik'
-  && evt.Unmarshaled.traefik.RouterName != nil
-  && evt.Unmarshaled.traefik['request_X-Real-Ip'] == nil
-whitelist:
-  reason: "matched a router but normalization did not complete; ClientHost is untrustworthy"
-  expression: ["true"]
-```
+It is no longer "successful normalization versus rejected normalization." Generic resolution
+does not need that distinction, and the logs cannot reliably infer every upstream resolution state.
 
-and the unmatched-request enrichment must extract the host from `ClientAddr` **handling bracketed
-IPv6** — the stock parser's `Split(ClientAddr, ':')[0]` is wrong there (F18).
+## 9. Validation plan and release boundaries
 
-One consequence worth accepting knowingly: a child router (`ParentRefs != nil`, §11) receives no
-entrypoint-default middleware, so its events land in row three and are dropped. That is a detection
-gap, not a security hole, and it is one more reason to confirm Pangolin emits none.
+No tests or implementation are added by this design revision.
 
-*The exact CrowdSec YAML above is illustrative and should be validated against a running instance
-during implementation; the requirement it encodes is not negotiable.*
+### V0 — feasibility and contract tests, before committing to implementation details
 
-Together this works identically under postures A and B, and neutralizes direct-path XFF spoofing
-because the value comes from the plugin, not from client input.
+- Load a minimal plugin through the intended Traefik release/Yaegi runtime and actual config
+  adapter. Exercise raw-map validation, nested lists, unsupported fields, durations, preset
+  overlay, netip map keys, atomic.Value, goroutines and concurrent construction.
+- Demonstrate secure stripping and insecure preservation, including missing X-Real-Ip becoming
+  the peer and missing XFP becoming origin transport. Do not assert missing-header rejection.
+- Demonstrate default-middleware placement, child inheritance, child-default 404, entrypoint
+  unmatched 404, SNI rejection and encoded-path rejection. Confirm which header/core fields
+  actually reach the logger, including buffered access logs.
+- Confirm the intended pure request-mutation path preserves TLS state and protocol streaming.
+- Optional-log-integration spike: implement and validate the §8 parser recipe only when that
+  integration is requested. It does not gate core Realclient v1. Feed forged public/private XFF
+  and X-Real-Ip through covered, unmatched, 400/421 and abnormal paths; inspect source_ip,
+  whitelist state, GeoIP metadata and resulting decisions, not just parser syntax.
 
-**Optionally, also whitelist the CDN ranges as `source_ip`.** Post-fix the only remaining way a POP
-address becomes `source_ip` is the cold-start window before a feed has loaded, where CDN traffic is
-treated as direct. A coarse, possibly-stale static list is fine for this — it is a safety net
-against banning our own CDN, not a trust decision.
+### V1 — generic best-effort resolver
 
-### 8.3 Alternatives considered
+Deliver ordered first-success sources, the four trust predicates in §3.4, single-IP extraction,
+source scheme extraction (single/uniform-list), pure-data presets, strict configuration,
+canonical normalization, shared feed workers, optional transactional disk cache, and useful
+feed diagnostics. Document deployment input preservation and downstream request-time consumers.
+No synchronous network startup dependency; no response marker; no HTTP rejection policy for
+ordinary failed resolution; no account credentials.
 
-- **Drop log acquisition entirely.** Cheapest, but loses real detection value — 4xx bruteforce,
-  path probing, bad-UA scenarios are what the collection provides; the bouncer only enforces. Not
-  recommended, though it is a legitimate fallback if the custom parser proves fragile across
-  CrowdSec upgrades.
-- **Point CrowdSec at backend logs.** Backends see a correct XFF (F3), but they are heterogeneous
-  and this multiplies parser work. Rejected.
-- **Fix `ClientHost` from the plugin.** Impossible — frozen at entry (F10).
-- **Conclude posture B is unattractive.** Rejected: posture A's log path is broken *by default* and
-  in a more dangerous direction (POP bans). The fix is orthogonal to the posture choice.
+Native unit and integration tests must cover:
 
-The residual cost is one CrowdSec parser file and one access-log field — a per-deployment step, but
-a single one, not per-Pull-Zone.
+- No sources; all predicates standing alone; static/feed union; overlapping sources; first
+  source predicate failure and extraction failure followed by later success; every source fails.
+- Private/internal identities; IPv4/IPv6, mapped prefixes and addresses, zones, /0 by family,
+  malformed ports, bracketed peer IPv6, forbidden identity forms, duplicate header instances.
+- Header-role precedence and deletion across unselected sources; case/underscore aliases;
+  preservation of country/provider metadata; canonical direct and resolved RemoteAddr tuples.
+- Exact identifiers without numeric coercion; actual wire whitespace handling; hostname label
+  boundaries, trailing dot plus port, invalid ports/IDNs/IP literals, duplicate host predicates.
+- Scheme independent of IP: TLS and non-TLS origin crossed with HTTP and HTTPS original scheme;
+  absent/invalid/duplicate/mixed/uniform-list metadata; actual WebSocket versus other upgrades.
+- Feed body limits, trailing garbage, duplicate-normalized counts, private CIDRs, invalid entry
+  among valid ones, valid and invalid cache, 200/304, ETag changes only after validation,
+  timeout/TLS/error responses, atomic cache interruption and failed persistence.
+- One feed loaded while the other is empty/LKG; static membership during outages; later updates
+  learning new edges. Readers see complete per-feed snapshots, not a promised whole-source epoch.
+- Concurrent New calls and initial cache loading; identical reloads reuse workers; changed
+  policy/URL/cacheDir creates independent workers; canceled router contexts do not stop polling;
+  removed sources cease participating. Measure workers for stable keys, not all process goroutines.
+- Real CrowdSec bouncer and AppSec: ban a resolved test client, allow another, and verify fallback
+  requests use the peer. Repeat with IPv6 and mapped representations where the harness permits.
+- Badger configured as documented; mtlswhitelist certificate path and separate no-certificate
+  IP-range path; downstream passTLSClientCert clears forged input and uses real certificates.
+- Backend-observed XFF, X-Real-Ip and scheme; WebSocket handshake/data, native HTTP/2 and gRPC
+  streaming through the intended full chain. Do not promise that AppSec inspects every message.
 
-### 8.4 Remaining CrowdSec config after adoption
+Run native race tests for registries/snapshot publication and actual Yaegi integration tests:
+native compilation alone is not Yaegi compatibility proof. Pin the supported Traefik release,
+its bundled Yaegi and Go toolchain in test documentation; master source inspection is not a
+blanket compatibility guarantee for older releases.
 
-Bouncer: **unchanged.** Leave `forwardedHeadersTrustedIps: []` and `clientTrustedIps: []` at
-defaults. Explicitly do not put CDN ranges in `forwardedHeadersTrustedIps` — different concept, and
-inert once XFF is deleted.
+### V1.1 — optional additions, separately justified
 
-Badger: `disableDefaultCFIPs: true`, `trustip: []`, `customIPHeader: ""` → straight to the
-`RemoteAddr` fallback. Works without these because `CF-Connecting-IP` is deleted, but they remove
-the F6 WARP hazard outright.
+- `trust.headerEquals` backed by `valueFrom: file:`, constant-time comparison and guaranteed
+  secret deletion after all source attempts. Load files at construction; rotation requires
+  reload. Do not mutate shared preset data or log secret values.
+- Optional strict policy, only if needed: after all sources fail, reject only if at least one
+  source fully matched its trust predicates but could not extract identity. Predicate non-matches
+  alone remain fallback, later successes always win, and synthesized managed headers remain
+  indistinguishable. This is not required-account authentication.
+- Periodic counters if operational experience warrants them.
 
-mtlswhitelist: unchanged, and only because `setRealIP: true` (F7). Dedicated regression test.
+### Later, only on concrete demand
 
-Ordering guaranteed by F2, not by Middleware Manager discipline.
+XFF rightmost-untrusted extraction with an explicit inner-proxy model; RFC 7239 parsing;
+additional original host/port metadata; provider-account inventory with appropriately scoped
+credentials; stale-age/shrink policies; worker reclamation if real configuration churn needs it.
+No provider-inventory framework, boolean policy DSL, HMAC protocol, or custom proxy is prebuilt.
+Original-scheme support is already v1, not deferred here.
 
----
+## Appendix A. Evidence retained and corrected
 
-## 9. Threat model
+### A.1 Upstream source evidence
 
-1. **Spoofed identity headers from a direct client** — mitigated: trust derives only from the
-   socket peer; identity headers deleted unconditionally on both paths. Note `CDN-*` metadata is
-   deliberately *not* touched (§6.3) — it is settable by a direct client today regardless, which is
-   why the Bunny preset documentation pairs `CDN-*` predicates with peer-range trust (§4.1).
-2. **Spoofed identity *through* Bunny by an ordinary client** — **eliminated, measured** (F11).
-   Bunny overwrites `X-Real-IP` and `X-Forwarded-For`, including duplicates. This was the largest
-   open risk before measurement.
-3. **Third-party ban injection via the log path** — the most serious issue found in this revision.
-   Fixed by §8.2. Would otherwise let any unauthenticated client get arbitrary IPs banned.
-4. **Another Bunny customer fronting our origin** — a **residual** risk of feed-only trust, and
-   explicitly *not* a design driver. The project exists to solve dynamic upstream trust; perfect
-   provider-account authentication is a separate, optional concern that must not be allowed to
-   dominate v1 complexity. Feed-only is the accepted baseline for this deployment.
-   A range feed proves *"came from Bunny infrastructure"*, not *"came through one of my zones"*.
-   Measured (§2 of the brief): a Pull Zone owner can forge `X-Real-IP` and `X-Forwarded-For` via
-   Edge Rules or Edge Scripting middleware. So another customer could point a zone at the origin
-   and forge client IPs, defeating CrowdSec bans.
-   - Accepted for a personal/homelab deployment, per instruction. It also applies unchanged to the
-     existing HAProxy arrangement, so it is not a regression.
-   - Mitigations, in ascending strength and cost (full discussion in §4.2):
-     - `hostSuffixes` on `CDN-Host` — **weak defence in depth**, not ownership proof. F16 showed
-       Bunny requires no DNS verification to register a hostname, so an attacker can register an
-       unused label under our domain. Still raises effort and filters misconfiguration at
-       essentially zero operational cost. Retained with that label.
-     - `hostExact` on `CDN-Host` over hostnames we already serve — provider-enforced, since
-       hostname → zone is globally unique (F16); per-hostname config; one property still untested.
-     - `headerIn` on `CDN-PullZoneId` — opaque-identifier match (§4.1.1), per-zone config, no
-       dependence on hostname-registration semantics.
-     - `headerEquals` shared secret via a per-zone Edge Rule — the strongest simple binding, and
-       the only one depending on a secret we hold rather than on a provider property. Remains
-       optional; its operational cost is that every Pull Zone must be configured correctly.
-   - Note the attacker does not need a matching hostname to *reach* the right router: a zone's
-     origin-Host override lets them present any `Host` to Traefik. That is why `hostExact` only
-     helps if `CDN-Host` is genuinely unaffected by that override — the second untested property.
-   - Test 1 (global hostname uniqueness) is **done and positive**: re-registering an in-use
-     hostname on a second Pull Zone is rejected. One test remains, and it gates only `hostExact` on
-     `CDN-Host`: set the origin Host header override (or an Edge Rule setting `Host`) on the
-     disposable zone and check whether `CDN-Host` follows it or stays at the routed hostname.
-   - `*.b-cdn.net` / `*.bunny.run` are **not** an ownership namespace; see §4.2.
-5. **Poisoned feed** (DNS hijack, MITM, provider compromise) — HTTPS with default validation, the
-   §5 corruption guards, and LKG retention. Genuinely new surface relative to a static list; stated
-   rather than hidden.
-6. **IPv4-mapped IPv6** used to evade a ban → always `Unmap()`.
-7. **IPv6 zone identifiers** → stripped.
-8. **Duplicate header instances** → rejected (§7).
-9. **Feed outage as a lever** → LKG means trust behaviour does not shift under refresh failure.
-10. **Yaegi interpretation cost** as soft DoS → hot path is one map lookup, ≤22 prefix comparisons,
-    and a handful of header operations.
+Traefik was independently inspected at
+[`d48621ce0b6fd221b20bdb6c22e652e7498e5db6`](https://github.com/traefik/traefik/tree/d48621ce0b6fd221b20bdb6c22e652e7498e5db6).
+Other references below state their inspected revision; moving links are evidence dated
+2026-09-07/08 and must be pinned in implementation fixtures.
 
----
+| Reference | Verified finding and consequence |
+|---|---|
+| [Forwarded headers](https://github.com/traefik/traefik/blob/d48621ce0b6fd221b20bdb6c22e652e7498e5db6/pkg/middlewares/forwardedheaders/forwarded_header.go) | Secure mode strips managed headers for untrusted peers. Both modes fill empty X-Real-Ip and XFP. Non-managed headers are not stripped by that trust check, but Connection-nominated headers can still be removed before plugins. Old “never touched” language was too broad. |
+| [Entrypoint model](https://github.com/traefik/traefik/blob/d48621ce0b6fd221b20bdb6c22e652e7498e5db6/pkg/server/aggregator.go) and [router chain](https://github.com/traefik/traefik/blob/d48621ce0b6fd221b20bdb6c22e652e7498e5db6/pkg/server/router/router.go) | Defaults attach to roots; parent middleware wraps child muxers. Unmatched entrypoint requests use the default observability/404 handler. RouterName is set before user middleware; it is not proof of execution. |
+| [SNI check](https://github.com/traefik/traefik/blob/d48621ce0b6fd221b20bdb6c22e652e7498e5db6/pkg/middlewares/snicheck/snicheck.go), [encoded-path denial](https://github.com/traefik/traefik/blob/d48621ce0b6fd221b20bdb6c22e652e7498e5db6/pkg/server/router/deny.go), [recursion guard](https://github.com/traefik/traefik/blob/d48621ce0b6fd221b20bdb6c22e652e7498e5db6/pkg/middlewares/denyrouterrecursion/deny_router_recursion.go) | Ordinary router checks can stop before Realclient with 421 or 400. These findings motivate exclusions only in the optional log recipe. |
+| [Access logger](https://github.com/traefik/traefik/blob/d48621ce0b6fd221b20bdb6c22e652e7498e5db6/pkg/middlewares/accesslog/logger.go) | ClientAddr/ClientHost are copied before middleware; ClientHost may come from XFF. Request.headers retains the original map and is serialized later. Retained canonical request headers are loggable after in-place mutation. |
+| [HTTP proxy](https://github.com/traefik/traefik/blob/d48621ce0b6fd221b20bdb6c22e652e7498e5db6/pkg/proxy/httputil/proxy.go) | Normal backend XFF append takes the host from RemoteAddr. The notAppendXFF option and downstream header mutations qualify any single-entry claim. |
+| [Plugin builder](https://github.com/traefik/traefik/blob/d48621ce0b6fd221b20bdb6c22e652e7498e5db6/pkg/plugins/builder.go), [Yaegi adapter](https://github.com/traefik/traefik/blob/d48621ce0b6fd221b20bdb6c22e652e7498e5db6/pkg/plugins/middlewareyaegi.go), [router factory](https://github.com/traefik/traefik/blob/d48621ce0b6fd221b20bdb6c22e652e7498e5db6/pkg/server/routerfactory.go) | Interpreter per configured plugin alias; handler construction repeats on rebuild. There is no explicit Close method, but router contexts are canceled on reload. Weak mapstructure decoding needs a strict plugin-owned boundary. |
+| [Yaegi netip exports](https://github.com/traefik/yaegi/blob/v0.16.1/stdlib/go1_22_net_netip.go), [atomic exports](https://github.com/traefik/yaegi/blob/v0.16.1/stdlib/go1_22_sync_atomic.go) | The inspected bundled Yaegi version exposes netip and atomic.Value. Runtime validation of the actual constructs remains necessary. |
+| [CrowdSec IP handling](https://github.com/maxlerebourg/crowdsec-bouncer-traefik-plugin/blob/04d9288/pkg/ip/ip.go), [bouncer/AppSec](https://github.com/maxlerebourg/crowdsec-bouncer-traefik-plugin/blob/04d9288/bouncer.go) | Default empty trusted pool selects the rightmost nonempty XFF value, otherwise SplitHostPort(RemoteAddr). More generally it also falls back if all header addresses are trusted. Parsing failure invokes technical rejection, not necessarily creation of a persistent ban decision. AppSec uses the same resolved IP. |
+| [Badger](https://github.com/fosrl/badger/blob/926d126/main.go) | Default CF ranges affect both getRealIP and setIPHeaders. Clear conflicting CF identity/scheme headers and disable its independent trust interpretation for the documented integration. |
+| [mtlswhitelist IP rule](https://github.com/smerschjohann/mtlswhitelist/blob/main/iprange.go), [handler](https://github.com/smerschjohann/mtlswhitelist/blob/main/mtlsOrWhitelist.go), [Traefik certificate headers](https://github.com/traefik/traefik/blob/d48621ce0b6fd221b20bdb6c22e652e7498e5db6/pkg/middlewares/passtlsclientcert/pass_tls_client_cert.go) | IP rules read X-Real-Ip then XFF. The certificate path reads PeerCertificates and branches before whitelist evaluation. The downstream Traefik producer can regenerate certificate headers from TLS state. |
+| [Stock CrowdSec Traefik parser](https://github.com/crowdsecurity/hub/blob/master/parsers/s01-parse/crowdsecurity/traefik-logs.yaml), [ordering](https://github.com/crowdsecurity/crowdsec/blob/909b5157986a2b2c2163300fdaef5ed01289f7d2/pkg/parser/unix_parser.go), [runtime](https://github.com/crowdsecurity/crowdsec/blob/909b5157986a2b2c2163300fdaef5ed01289f7d2/pkg/parser/runtime.go) | Stock source_ip comes from the rightmost ClientHost value; IPv6 ClientAddr splitting is unsuitable. Attribution must precede enrichment/whitelisting. Parser order and next_stage affect which processing runs. |
+| [Cloudflare headers](https://developers.cloudflare.com/fundamentals/reference/http-headers/) | Original XFP is documented; Pseudo IPv4 overwrite and Worker subrequests qualify CF-Connecting-IP semantics. CF-IPCountry is metadata, not another client IP. |
+| [Go netip](https://github.com/golang/go/blob/master/src/net/netip/netip.go), [HTTP/1 header reader](https://github.com/golang/go/blob/master/src/net/textproto/reader.go) | Address family, mapped-prefix and zone handling must be explicit; ParsePrefix does not mask host bits. Middleware sees parsed header values, not preserved wire whitespace. |
 
-## 10. Test strategy
+Valid host:port, rather than port zero specifically, is the downstream requirement. Previous
+execution checked SplitHostPort on IPv4 :0 and bracketed IPv6 :0; the inspected consumers discard
+or string-handle the port. This is retained as compatibility evidence, not a fresh runtime test.
 
-Plugin is ordinary Go; unit tests run natively.
+### A.2 Previously measured Bunny behavior
 
-**Resolution unit tests** (table-driven over `(peer, headers, sources) → (client, action)`):
-- direct v4 / v6, no headers → `client = peer`, `RemoteAddr` **unchanged**
-- direct with spoofed `X-Real-IP`, XFF, `CF-Connecting-IP`, `True-Client-IP`, `Forwarded` and
-  `X_Real_IP` → **client-identity headers removed**, canonical `X-Real-Ip` set to the peer,
-  `client = peer`
-- direct with spoofed `CDN-Host` and `CDN-RequestCountryCode` → **passed through byte-identical**;
-  they are provider metadata, not client identity, and the plugin does not strip them (§6.3). The
-  forged `CDN-Host` must not cause a trust match, because no peer-address predicate matched
-- trusted path with `hostExact`/`hostSuffixes`/`headerIn` configured over `Cdn-Host` /
-  `Cdn-Pullzoneid` → predicate evaluated **and the header still reaches `next` unmodified**;
-  inspecting a header is never a reason to delete it (§6.2)
-- Bunny-like: peer in set + `X-Real-IP` v4 → extracted; v6; `::ffff:1.2.3.4` → unmapped
-- Bunny-like with header missing / empty / whitespace / garbage / `"1.2.3.4, 5.6.7.8"` / duplicate
-  instances / private address → **403** in each case
-- Cloudflare-like via `CF-Connecting-IP`
-- both providers configured; peer matches CF only; peer matches neither → direct
-- overlapping ranges → first source wins, deterministically
-- `headerEquals`: correct secret → trusted; wrong secret + peer in range → 403; wrong secret + peer
-  out of range → direct
-- `headerEquals` as a source's **sole** predicate (no `static`/`feeds`): correct secret from an
-  arbitrary peer → trusted; absent/wrong → direct
-- `headerIn` on `Cdn-Pullzoneid`: exact byte match → trusted; `"6498612 "`, `"06498612"` and
-  `"6498612."` → 403 (proves no hostname normalization is applied, §4.1.1)
-- `trust` composition: `static`+`feeds` union (peer in either → predicate holds); `feeds AND
-  headerEquals` requires both; empty `trust` → **config error at startup**
-- **each predicate valid standing alone** — one case per predicate (`static`, `feeds`, `headerIn`,
-  `hostExact`, `hostSuffixes`, and `headerEquals` at v1.1): configured as a source's only predicate,
-  a matching request is trusted and a non-matching one is not. Asserts the plugin imposes no
-  anchor requirement (§4.1)
-- `hostSuffixes`: `a.lochnair.net` and `lochnair.net` match; **`evil-lochnair.net` does not**;
-  `A.LOCHNAIR.NET` matches; `a.lochnair.net.` matches; `a.lochnair.net:443` matches; header missing
-  → 403; config validation **rejects** a `b-cdn.net` / `bunny.run` suffix
-- `hostExact`: exact match (case-insensitive, trailing dot and port stripped) → trusted;
-  near-miss (`evil-btest.oandc.fun`, `btest.oandc.fun.evil.com`) → 403; header missing → 403;
-  header present more than once → 403
-- **multi-provider**: Bunny source with `hostSuffixes` + Cloudflare source without, both active;
-  a Bunny peer failing the suffix → 403 while a Cloudflare peer on the same instance still resolves
-  normally (proves predicates are per-source, not global)
-- **`RemoteAddr` output**: `1.2.3.4:0` and `[2001:db8::1]:0`; assert `net.SplitHostPort` succeeds
-  (the F4 guard)
-- assert the full delete list is absent and `X-Real-Ip` equals `client`; **on rejection `X-Real-Ip`
-  is unset** (the §8.2 log-drop precondition)
-- **header-role matrix (§6.2)**, on both the trusted and direct paths:
-  - identity headers (`extract.header` + the fixed list) → **removed**, single canonical `X-Real-Ip` set
-  - `trust.headerEquals` secret header → **stripped after use**, never reaches `next`
-  - `trust.headerIn` / `hostExact` / `hostSuffixes` headers (`Cdn-Pullzoneid`, `Cdn-Host`) →
-    **present and byte-identical** at `next`; inspecting must not delete
-  - all other `CDN-*` metadata → passed through untouched on every path
+These observations are carried forward from the original design's Edge Script echo app and
+disposable Pull Zone experiments. This revision did not repeat them.
 
-**Feed unit tests:**
-- parse `lines` (bare IPs, CIDRs, comments, CRLF, trailing blank, BOM) and `json-array`
-- validation rejects and retains LKG: empty, below `minEntries`, `0.0.0.0/0`, `10.0.0.0/8`, prefix
-  below floor, one unparseable entry among many
-- 500 / timeout / TLS failure / truncated body → LKG retained; 304 → no swap, no error
-- disk cache round-trip; corrupt cache ignored, not fatal
-- two sources sharing a URL → one updater; `New()` 100× → still one goroutine per URL
-- concurrent readers during a swap see old or new, never partial
+1. With no Edge Rules, origin X-Real-IP and XFF each contained the real client IP. XFF was not
+   "CDN IP, client IP". Supplied spoof values and duplicate X-Real-IP instances were overwritten.
+2. A Pull Zone owner could customize X-Real-IP/XFF using Edge Rules or Scripting. Provider-level
+   trust is therefore not account binding, even though ordinary clients on the tested stock
+   path could not spoof those IP headers.
+3. Edge Rules refused to set CDN-PullZoneId with the message that CDN-prefixed headers are not
+   allowed. Scripted identity changes still left genuine CDN metadata in the observed origin
+   request. Direct requests to Traefik can nevertheless supply arbitrary CDN metadata.
+4. The same zone reached through test-pabb4.b-cdn.net, test-pabb4.bunny.run and btest.oandc.fun
+   produced those respective CDN-Host values. An unrelated unconfigured Host was rejected by
+   Bunny rather than reaching the origin.
+5. Adding an unowned custom hostname succeeded without DNS ownership verification and routed
+   immediately. Re-registering an already attached exact hostname on another zone was rejected.
+   This supports exact-name uniqueness, not ownership of every name under a suffix.
+6. Still untested: whether CDN-Host changes with an origin Host override or a rule changing Host.
+   This limits the account-binding interpretation of hostExact, not generic exact comparison.
+7. One capture with rules/scripting active produced XFP `https, https` despite no supplied XFP.
+   Cause and authority were not established. Uniform-list parsing accepts agreement without
+   inventing a hop topology; source provenance remains a separate requirement.
+8. Observed non-IP metadata included CDN-ConnectionId, CDN-RequestId, CDN-JA4, CDN-LoopCount,
+   CDN-ProxyVer, CDN-MobileDevice, CDN-ServerZone and CDN-RequestStateCode, as well as CDN-Host,
+   CDN-PullZoneId, CDN-RequestCountryCode and CDN-ServerId.
 
-**Integration (docker-compose, real Traefik):**
-- normalizer pinned as entrypoint middleware + echo backend; assert backend-observed XFF and
-  `X-Real-Ip`
-- fake "CDN" container injected via `trust.static`, replaying Bunny-shaped and CF-shaped requests
-- **acceptance test A (remediation)**: real CrowdSec, ban `1.2.3.4`, Bunny-shaped request with
-  `X-Real-IP: 1.2.3.4` from the fake CDN → 403; non-banned IP → 200
-- **acceptance test B (detection, new)**: with `insecure: true`, send a *direct* request carrying
-  `X-Forwarded-For: <victim>` and trigger a scenario; assert the resulting CrowdSec decision names
-  the **real peer**, not the victim. This is the §8.2 regression and the most important new test.
-- assert the JSON access log contains `request_X-Real-Ip` equal to the normalized client
-- **plugin-rejected request** (trusted peer, missing identity): assert the access-log line has
-  `RouterName` **present** and `request_X-Real-Ip` **absent**, and that CrowdSec creates **no
-  decision** for either the POP or any forged XFF value — §8.2 row three
-- **unmatched request** (Host matching no router, sent with a forged `X-Forwarded-For` under posture
-  B): assert the access-log line **omits `RouterName`**, and that CrowdSec derives `source_ip` from
-  `ClientAddr` — the real socket peer, **not** the forged XFF. Repeat with an IPv6 peer to confirm
-  the bracketed-`ClientAddr` extraction (F18). This is the probe-detection regression
-- direct request from a banned IP → 403 (direct path not broken)
-- mTLS route: cert presented → mtlswhitelist allows, **and** its IP-range rule still matches (F7)
-- WebSocket and native gRPC through the full chain (the HAProxy H2 regression)
-- 20 config reloads → goroutine count stable
+Feed probes recorded on 2026-09-07:
 
-**Remaining optional experiment** (§9.4): whether `CDN-Host` reflects the routed hostname or a
-zone's origin-Host override. It gates only whether the opt-in `hostExact` predicate is worth
-enabling, not v1 scope. The other two Bunny hostname questions are settled: no DNS-ownership
-verification on registration (F16, negative), and global hostname→zone uniqueness (F16, positive).
+| Feed | Observed representation |
+|---|---|
+| Bunny /system/edgeserverlist/plain | 586 individual IPv4 addresses, line format, ETag. |
+| Bunny /system/edgeserverlist/ipv6 | Approximately 300 individual IPv6 addresses, JSON array, including with ?plain=true. |
+| Cloudflare /ips-v4 | 15 CIDRs. |
+| Cloudflare /ips-v6 | 7 CIDRs. |
 
----
+These are measurements, not permanent counts, prefix floors, or a guarantee that feeds never
+change. Generic feeds are not required to resemble either provider.
 
-## 11. Traefik / plugin limitations to accept
+## Appendix B. Adversarial review disposition
 
-- **No shutdown hook** for plugin middlewares → deduped, immortal updater goroutines.
-- **`New()` runs on every config reload** → init idempotent; the single bounded synchronous fetch
-  happens at most once per URL per process.
-- **Yaegi is interpreted** → hot path stays trivial; drives the hybrid exact-set/prefix-list.
-- **Entrypoint model middlewares live in static config** → adding/removing the normalizer
-  entrypoint-wide needs a restart. Mostly a feature: it cannot be dropped by a dynamic-config edit.
-- **Child routers (`ParentRefs != nil`) do not receive entrypoint model middlewares**
-  (`aggregator.go:330`). Confirm Pangolin emits none.
-- **Posture B widens the plugin's responsibility** from identity to all forwarded-header hygiene,
-  including the TLS client-cert headers.
-- **`ClientHost` / `ClientAddr` are unreachable from a plugin** (F10). Access-log aesthetics stay
-  out of scope; CrowdSec correctness is handled via the header channel (§8), not by fixing the log.
-- **A provider plugin cannot help**: `forwardedHeaders` is static config; provider plugins emit only
-  dynamic config.
-- **No Traefik fork is needed.**
+Numbers refer to the independent review preceding this revision.
 
----
+| Finding | Disposition and reason |
+|---|---|
+| 1. Header presence is not execution proof | **Accepted; remedy changed.** Remove the old three-way classifier. Optional log integration uses explicit coverage and conservative early-status exclusions; no core marker mechanism. |
+| 2. Traefik synthesizes missing Bunny identity | **Accepted; policy changed.** Equal-to-peer identity is valid best effort, not an HTTP error. Document inability to distinguish synthesis. |
+| 3. Overlapping sources conflict | **Accepted.** First full predicate match plus successful extraction wins; every failure permits later sources. |
+| 4. Decoder and preset hardening loss | **Accepted.** Strict raw boundary, limited explicit overlay, whole-list replacement, explicit duration parsing and unsupported-field errors. |
+| 5. Worker policy/lifecycle ambiguity | **Accepted; simplified.** Immutable full-spec keys, per-interpreter sharing and intentional background lifetime. No live policy merging or refcounting. |
+| 6. Late CrowdSec override | **Accepted for optional integration.** One replacement s01 parser attributes before s02; no after-the-fact source_ip patch. |
+| 7. Partial feeds/POP attribution | **Accepted as inherent information loss.** Use available unions and peer fallback; readiness denial and a mandatory CDN whitelist are rejected as core requirements. |
+| 8. Scheme is not origin TLS | **Accepted in v1.** Trusted source metadata with single/uniform-list parsing; transport is the explicit fallback. |
+| 9. IP normalization gaps | **Accepted; restrictions reduced.** Canonical direct host/port and explicit prefix-family rules; legitimate private/local client identities remain supported. |
+| 10. Overfit feed guards | **Accepted.** Remove public-space and prefix-floor assumptions; retain strict complete parsing, resource limits, distinct minimum counts and LKG. |
+| 11. Cache/ETag transaction | **Accepted.** Validated representation and validator stay together; revalidate cache and atomically replace files. |
+| 12. Cloudflare exceptions | **Accepted.** Document supported settings/Worker limitations rather than adding provider-specific extraction. |
+| 13. Child/root ordering | **Accepted.** Correct inherited execution and document root-routing visibility. |
+| 14. Parsed header/hostname semantics | **Accepted.** Parsed-value comparisons, explicit DNS grammar/order, cardinality and header-role precedence. |
+| 15. Earlier falsification tests | **Accepted with scope change.** Core runtime/config/order spikes are v0; optional CrowdSec parser validation gates only that integration. |
+| Optional setRealIP switch | **Accepted.** Remove it: every usable request receives the canonical effective identity. |
+| Optional metadata consistency | **Accepted.** Preserve CF-IPCountry alongside Bunny country metadata; remove Cf-Visitor because it competes on scheme. |
+| Optional Bunny suffix blacklist | **Accepted.** Generic matching has no provider-domain blacklist; document provenance and namespace limits. |
+| Response marker/execution-proof architecture | **Deferred unless an integration demands broader coverage.** Not needed for resolution or the conservative optional log recipe; full transparent log attribution is not promised. |
+| Default strict HTTP rejection/account authentication | **Rejected as the project baseline.** Resolution failure is peer fallback; authorization belongs elsewhere. Limited strict extraction policy and secrets remain optional later work. |
 
-## 12. Phased plan
-
-**v0 — remaining spike (small; the Bunny header spike is done)**
-1. ~~Bunny hostname tests~~ — **done** (F16): no ownership verification on registration; hostname →
-   Pull Zone is globally unique. One optional follow-up remains (§9.4, origin-Host override) and it
-   gates only the opt-in `hostExact` predicate, not v1.
-2. Confirm F1 end-to-end with a 20-line logging plugin behind a stock entrypoint.
-3. Confirm F10 end-to-end: set a header in that plugin, verify it appears as `request_<Name>` in the
-   JSON access log. This underwrites all of §8.
-
-**v1 — minimal and reliable**
-- ordered `sources`; trust predicates **`static`, `feeds`, `headerIn`, `hostExact`, `hostSuffixes`**
-  (all composable, all off by default except what a preset supplies, §4.1); `extract.mode: single`
-  only. `headerEquals` is **v1.1** — it is the only predicate needing secret loading and
-  constant-time comparison, so it is separated from the pure set-membership ones.
-- `bunny` and `cloudflare` presets as pure data
-- feed subsystem per §5 as trimmed: deduped registry, ticker + jitter, ETag, strict parsing,
-  fixed corruption guards, atomic swap, LKG, disk cache, one bounded synchronous first fetch
-- normalization: `RemoteAddr` → `client:0` (normalized) / untouched (direct); full delete list;
-  canonical `X-Real-Ip`; `CDN-*` left untouched (§6.3)
-- fail-closed matrix (§7)
-- `entrypointForwardedHeaders` flag selecting posture A or B hygiene
-- **§8 shipped as part of v1, not deferred** — access-log field, the `source_ip` parser, and the
-  drop-on-missing-header whitelist. Without these, adoption makes CrowdSec worse, not better.
-  The CDN-range detection whitelist is **optional** belt-and-braces for the cold-start window
-  (§8.2), not required machinery.
-- structured logging, one line per rejection
-- docs: exact entrypoint, access-log, CrowdSec, Badger and Middleware Manager configuration
-
-**v1.1**
-- **`trust.headerEquals`** with constant-time comparison and `valueFrom: file:` — the only trust
-  predicate deferred past v1; enables the `feeds AND headerEquals` posture and the
-  authenticated-header-only source shape shown in §4.1
-- counters surfaced via periodic log summary (plugins cannot register Prometheus collectors)
-
-**v2 — only on concrete need**
-- **Provider-account inventory as a trust source.** `GET https://api.bunny.net/pullzone?perPage=1000`
-  with an `AccessKey` returns Pull Zone IDs and the hostnames belonging to each zone. A trust source
-  could periodically derive the set of valid Pull Zone IDs and exact hostnames **from the account
-  itself**, giving:
-  ```
-  peer ∈ Bunny edge feed  AND  CDN-PullZoneId ∈ my account  AND  valid X-Real-IP
-  ```
-  with no per-zone Traefik maintenance — architecturally the nicest answer to §9.4.
-  **Not in v1.** The blocker is credential scope: Bunny currently exposes an account-wide
-  management API key, not a read-only Pull Zone credential. Putting an account-wide key into
-  Traefik purely for provenance checking is an unattractive trade. Revisit if Bunny gains scoped
-  credentials, or if a deployment explicitly accepts the risk.
-  Shape v1's `trust` interface so a predicate can be backed by a periodically-refreshed set rather
-  than a literal list — that costs nothing now — but **do not build a generic provider-inventory
-  framework in advance** merely because this idea exists.
-- `extract.mode: xff-rightmost-untrusted` with an explicit inner-proxy pool
-- RFC 7239 `Forwarded` parsing
-- HMAC / timestamped origin auth
-- per-source proto header override
-- feed hardening deferred from v1: shrink heuristics, configurable floors, backoff
-
-**Explicit non-goals**: access-log `ClientAddr`/`ClientHost` rewriting, overlap arbitration beyond
-list order, arbitrary chain depth, PROXY protocol, per-provider code paths.
+The architecture can proceed to the v0 checks without treating optional log detection or Bunny
+account binding as prerequisites. Implementation starts only under a separate implementation task.
