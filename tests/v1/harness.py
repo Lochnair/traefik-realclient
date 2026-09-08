@@ -38,6 +38,26 @@ def stage_plugin(root: pathlib.Path):
     return dest
 
 
+def stage_local_plugin(root: pathlib.Path, module: str, repo: str, ref: str):
+    """Download a third-party Traefik plugin as a local plugin (source tarball)."""
+    import io
+    import tarfile
+    import urllib.request
+    dest = root / "plugins-local" / "src" / module
+    dest.mkdir(parents=True, exist_ok=True)
+    url = f"https://codeload.github.com/{repo}/tar.gz/refs/tags/{ref}"
+    data = urllib.request.urlopen(url, timeout=30).read()
+    with tarfile.open(fileobj=io.BytesIO(data)) as tar:
+        members = [m for m in tar.getmembers() if m.isfile()]
+        prefix = members[0].name.split("/")[0] + "/"
+        for m in members:
+            rel = m.name[len(prefix):]
+            target = dest / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(tar.extractfile(m).read())
+    return dest
+
+
 def self_signed(root: pathlib.Path, cn="origin.test"):
     key, cert = root / "key.pem", root / "cert.pem"
     subprocess.run(
@@ -127,26 +147,35 @@ def start_backend():
     return backend
 
 
-@contextlib.contextmanager
-def traefik(binary, root: pathlib.Path, static: dict, logdir: pathlib.Path, ready_url):
+def _url_ready(ready_url):
     import urllib.request
     import urllib.error
+    try:
+        return urllib.request.urlopen(ready_url, timeout=1).status == 200
+    except (OSError, urllib.error.HTTPError):
+        return False
+
+
+@contextlib.contextmanager
+def traefik(binary, root: pathlib.Path, static: dict, logdir: pathlib.Path, ready):
+    """`ready` is a URL string (polled for HTTP 200) or a zero-arg callable -> bool."""
+    check = ready if callable(ready) else (lambda: _url_ready(ready))
     (root / "static.yml").write_text(json.dumps(static))
     logdir.mkdir(parents=True, exist_ok=True)
     with (logdir / "traefik.log").open("w") as log:
         proc = subprocess.Popen([binary, "--configFile=" + str(root / "static.yml")],
                                 cwd=root, stdout=log, stderr=subprocess.STDOUT)
         try:
-            deadline = time.monotonic() + 25
+            deadline = time.monotonic() + 30
             while True:
                 try:
-                    if urllib.request.urlopen(ready_url, timeout=1).status == 200:
+                    if check():
                         break
-                except (OSError, urllib.error.HTTPError):
+                except OSError:
                     pass
                 if proc.poll() is not None or time.monotonic() > deadline:
                     raise RuntimeError("Traefik did not become ready; inspect " + str(logdir / "traefik.log"))
-                time.sleep(0.1)
+                time.sleep(0.15)
             yield proc
         finally:
             proc.terminate()
