@@ -62,7 +62,24 @@ integrations. No contradiction with `docs/design.md` or
 
 ## Assumptions contradicted
 
-None.
+One, found in production (2026-09-09) and fixed on this branch:
+
+- **A source with more than one feed only trusted its last feed.** The compiled
+  source held its workers in `feeds []addressSource` (an interface slice).
+  Building it under Yaegi 0.16.1 — `for _, key := range s.specs { s.feeds =
+  append(s.feeds, acquireWorker(key)) }` — made **every element alias the last
+  worker** (also reproduced with a pre-sized slice + indexed assignment, so the
+  trigger is boxing a concrete pointer into interface-slice elements in a loop,
+  not `append` or the range variable). Both workers were still created and
+  refreshed their caches correctly, so the persisted cache looked right while
+  every request consulted the wrong worker. On `pangolin-sg` the `bunny` preset's
+  IPv4 + IPv6 feeds both resolved to the IPv6 worker, so no Bunny POP (IPv4) was
+  ever recognised and every Bunny request fell back to the POP IP.
+  Native Go always wired this correctly; `tests/v1/feeds.py` missed it because it
+  configures a single feed. Fix: `feeds []*feedWorker` (drop the unused
+  `addressSource` interface). Guarded by `TestMultiFeedSourceWiresEveryWorker`
+  (native contract) and `tests/v1/multifeed.py` (end-to-end, two feeds, peer in
+  the first — fails 3/4 without the fix).
 
 ## Reproduction
 

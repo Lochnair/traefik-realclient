@@ -8,7 +8,6 @@ import (
 	"strings"
 )
 
-type addressSource interface{ contains(netip.Addr) bool }
 type addressSet struct {
 	exact    map[netip.Addr]bool
 	prefixes []netip.Prefix

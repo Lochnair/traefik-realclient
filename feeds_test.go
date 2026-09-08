@@ -294,7 +294,7 @@ func TestSnapshotReadersAndPartialFeeds(t *testing.T) {
 	}
 	s.sources[0].static = addressSet{}
 	s.sources[0].specs = []feedKey{w.key, empty.key}
-	s.sources[0].feeds = []addressSource{w, empty}
+	s.sources[0].feeds = []*feedWorker{w, empty}
 	r := request("192.0.2.2:5")
 	r.Header.Set("X-Client", "10.0.0.1")
 	m := &middleware{next: http.NotFoundHandler(), settings: s}
@@ -404,7 +404,7 @@ func TestNewWorkerSharingAndLifetime(t *testing.T) {
 	if got := count() - before; got != 1 {
 		t.Fatalf("identical specs across sources produced %d workers", got)
 	}
-	shared := h.(*middleware).settings.sources[0].feeds[0].(*feedWorker)
+	shared := h.(*middleware).settings.sources[0].feeds[0]
 	if shared.value.Load().(feedSnapshot).set.exact == nil {
 		t.Fatal("worker exposed before an initialized snapshot")
 	}
@@ -434,5 +434,50 @@ func TestNewWorkerSharingAndLifetime(t *testing.T) {
 	}
 	if got := count() - before; got != 1 {
 		t.Fatalf("cacheDir separation with identical reload produced %d workers", got)
+	}
+}
+
+// A source with more than one feed must wire each s.feeds slot to the worker for
+// the matching spec. This is the pre-plugin representation, so the check is over
+// New()'s output rather than a hand-built slice. Regression: under Yaegi 0.16.1
+// the previous []addressSource slice made every element alias the last worker,
+// so on pangolin-sg the Bunny preset's two feeds both resolved to the IPv6
+// worker and no request ever consulted the IPv4 edge list. The native run
+// always wired this correctly; the guard is the type, and the end-to-end proof
+// lives in tests/v1/multifeed.py.
+func TestMultiFeedSourceWiresEveryWorker(t *testing.T) {
+	f := func(url, format string) FeedConfig {
+		return FeedConfig{URL: text(url), Format: text(format), RefreshInterval: text("1h"), MinEntries: 1}
+	}
+	cfg := &Config{FeedCacheDir: text(t.TempDir()), Sources: []SourceConfig{{
+		Name: text("bunny"),
+		Trust: &TrustConfig{Feeds: &[]FeedConfig{
+			f("https://127.0.0.1:1/plain", "lines"),
+			f("https://127.0.0.1:1/ipv6", "json-array"),
+			f("https://127.0.0.1:1/extra", "lines"),
+		}},
+		Extract: &HeaderConfig{Header: text("X-Real-Ip"), Mode: text("single")},
+	}}}
+	h, err := New(context.Background(), http.NotFoundHandler(), cfg, "multi")
+	if err != nil {
+		t.Fatal(err)
+	}
+	src := h.(*middleware).settings.sources[0]
+	if len(src.feeds) != len(src.specs) || len(src.feeds) != 3 {
+		t.Fatalf("feeds=%d specs=%d, want 3/3", len(src.feeds), len(src.specs))
+	}
+	seen := map[*feedWorker]bool{}
+	for i := range src.specs {
+		w := src.feeds[i]
+		if w == nil || w.key != src.specs[i] {
+			t.Fatalf("feeds[%d] key=%+v, want spec %+v", i, w.key, src.specs[i])
+		}
+		if seen[w] {
+			t.Fatalf("feeds[%d] aliases an earlier slot (worker %p)", i, w)
+		}
+		seen[w] = true
+		if acquireWorker(src.specs[i]) != w {
+			t.Fatalf("feeds[%d] is not the registered worker for its spec", i)
+		}
 	}
 }

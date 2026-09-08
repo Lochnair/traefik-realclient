@@ -82,7 +82,7 @@ type predicate struct {
 type source struct {
 	name            string
 	static          addressSet
-	feeds           []addressSource
+	feeds           []*feedWorker
 	specs           []feedKey
 	predicates      []predicate
 	extract, scheme headerRule
