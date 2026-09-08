@@ -4,7 +4,9 @@
 Every harness loads the *real* plugin package (github.com/Lochnair/traefik-realclient)
 as a Traefik local plugin, so it is exercised through Traefik 3.7.12 / Yaegi 0.16.1.
 """
+import base64
 import contextlib
+import hashlib
 import http.server
 import json
 import pathlib
@@ -74,6 +76,27 @@ class EchoBackend(http.server.BaseHTTPRequestHandler):
             self.send_header("Content-Length", "0")
             self.end_headers()
             return
+        if self.headers.get("Upgrade", "").lower() == "websocket":
+            key = self.headers["Sec-WebSocket-Key"]
+            accept = base64.b64encode(hashlib.sha1(
+                (key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11").encode()).digest()).decode()
+            self.send_response(101)
+            self.send_header("Upgrade", "websocket")
+            self.send_header("Connection", "Upgrade")
+            self.send_header("Sec-WebSocket-Accept", accept)
+            self.send_header("X-Effective", self.headers.get("X-Real-Ip", ""))
+            self.send_header("X-Proto", self.headers.get("X-Forwarded-Proto", ""))
+            self.end_headers()
+            self.wfile.flush()
+            frame = self.rfile.read(2)
+            length = frame[1] & 127
+            mask = self.rfile.read(4)
+            data = self.rfile.read(length)
+            payload = bytes(b ^ mask[i % 4] for i, b in enumerate(data))
+            self.wfile.write(bytes([0x81, len(payload)]) + payload)
+            self.wfile.flush()
+            self.close_connection = True
+            return
         if self.path.startswith("/stream"):
             self.release.clear()
             self.send_response(200)
@@ -117,11 +140,9 @@ def traefik(binary, root: pathlib.Path, static: dict, logdir: pathlib.Path, read
             deadline = time.monotonic() + 25
             while True:
                 try:
-                    urllib.request.urlopen(ready_url, timeout=1).close()
-                    break
-                except urllib.error.HTTPError:
-                    break
-                except OSError:
+                    if urllib.request.urlopen(ready_url, timeout=1).status == 200:
+                        break
+                except (OSError, urllib.error.HTTPError):
                     pass
                 if proc.poll() is not None or time.monotonic() > deadline:
                     raise RuntimeError("Traefik did not become ready; inspect " + str(logdir / "traefik.log"))

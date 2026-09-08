@@ -125,7 +125,7 @@ def run(binary, output):
             cert, key = harness.self_signed(root)
             ports = {n: harness.freeport() for n in ["plugin", "secure", "stock", "tls", "place"]}
             static = build_static(root, backend.server_port, ports, cert, key)
-            ready = f"http://127.0.0.1:{ports['plugin']}/ping"
+            ready = f"http://127.0.0.1:{ports['plugin']}/__up"
             with harness.traefik(binary, root, static, output, ready):
                 P, S, K = ports["plugin"], ports["secure"], ports["stock"]
 
