@@ -9,6 +9,7 @@ import (
 
 var identityHeaders = []string{"Forwarded", "X-Forwarded-For", "X-Real-Ip", "X-Client-Ip", "X-Cluster-Client-Ip", "X-Original-Forwarded-For", "X-Originating-Ip", "True-Client-Ip", "Cf-Connecting-Ip", "Cf-Connecting-Ipv6", "Cf-Pseudo-Ipv4", "Fastly-Client-Ip", "Fly-Client-Ip", "X-Azure-Clientip", "X-Azure-Socketip", "X-Appengine-User-Ip", "Proxy-Client-Ip", "WL-Proxy-Client-Ip", "X-ProxyUser-Ip"}
 var forwardingHeaders = []string{"X-Forwarded-Proto", "X-Forwarded-Scheme", "X-Scheme", "X-Forwarded-Host", "X-Forwarded-Port", "X-Forwarded-Prefix", "X-Forwarded-Uri", "X-Forwarded-Method", "X-Forwarded-Tls-Client-Cert", "X-Forwarded-Tls-Client-Cert-Info", "Cf-Visitor"}
+var ownedHeaders = []string{"X-Realclient-Verified", "X-Realclient-Source"}
 
 func headerAlias(name string) string { return strings.ToLower(strings.ReplaceAll(name, "_", "-")) }
 func singleHeader(r *http.Request, name string) (string, bool) {
@@ -129,6 +130,7 @@ func (m *middleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	effective := peer
+	resolvedSource := ""
 	scheme := "http"
 	if r.TLS != nil {
 		scheme = "https"
@@ -146,6 +148,7 @@ func (m *middleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		effective, port = ip, "0"
+		resolvedSource = s.name
 		if original := s.scheme.schemeValue(r); original != "" {
 			scheme = original
 		}
@@ -158,6 +161,10 @@ func (m *middleware) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	r.RemoteAddr = net.JoinHostPort(effective.String(), port)
 	r.Header.Set("X-Real-Ip", effective.String())
+	if resolvedSource != "" {
+		r.Header.Set("X-Realclient-Verified", "true")
+		r.Header.Set("X-Realclient-Source", resolvedSource)
+	}
 	forwardedScheme := scheme
 	if isWebsocket {
 		if scheme == "https" {

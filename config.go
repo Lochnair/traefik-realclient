@@ -159,11 +159,17 @@ func compileConfig(cfg *Config) (settings, error) {
 	for _, name := range forwardingHeaders {
 		result.remove[headerAlias(name)] = true
 	}
+	for _, name := range ownedHeaders {
+		result.remove[headerAlias(name)] = true
+	}
 	names := make(map[string]bool)
 	for _, supplied := range cfg.Sources {
 		name, err := required(supplied.Name, "source.name")
 		if err != nil {
 			return settings{}, err
+		}
+		if !validHeaderValue(name) {
+			return settings{}, fmt.Errorf("source.name contains bytes unsafe for an HTTP header value")
 		}
 		if names[name] {
 			return settings{}, fmt.Errorf("duplicate source name %q", name)
@@ -226,6 +232,9 @@ func compileSource(c SourceConfig, cacheDir string) (source, error) {
 		if !validHeader(h) || strings.EqualFold(h, "Host") {
 			return s, fmt.Errorf("invalid headerIn header")
 		}
+		if reservedOutput(headerAlias(h)) {
+			return s, fmt.Errorf("headerIn input header %q conflicts with a Realclient-owned output header", h)
+		}
 		if t.HeaderIn.Values == nil {
 			return s, fmt.Errorf("headerIn.values required")
 		}
@@ -266,6 +275,9 @@ func compileHost(header *string, values *[]string, kind string) (predicate, erro
 	if !validHeader(h) {
 		return p, fmt.Errorf("invalid %s header", kind)
 	}
+	if reservedOutput(headerAlias(h)) {
+		return p, fmt.Errorf("%s input header %q conflicts with a Realclient-owned output header", kind, h)
+	}
 	p.header = http.CanonicalHeaderKey(h)
 	if values == nil {
 		return p, fmt.Errorf("%s values required", kind)
@@ -296,6 +308,9 @@ func compileHeader(c *HeaderConfig, scheme bool) (headerRule, error) {
 		return rule, fmt.Errorf("invalid or reserved input header %q", h)
 	}
 	alias := headerAlias(h)
+	if reservedOutput(alias) {
+		return rule, fmt.Errorf("input header %q conflicts with a Realclient-owned output header", h)
+	}
 	if scheme {
 		if mode != "single" && mode != "uniform-list" {
 			return rule, fmt.Errorf("unknown scheme mode %q", mode)
@@ -394,10 +409,26 @@ func validHeader(name string) bool {
 	}
 	return true
 }
+func validHeaderValue(value string) bool {
+	for i := 0; i < len(value); i++ {
+		if value[i] < ' ' && value[i] != '\t' || value[i] == 0x7f {
+			return false
+		}
+	}
+	return true
+}
 func reservedInput(name string) bool {
 	switch name {
 	case "host", "connection", "upgrade", "transfer-encoding", "content-length", "te", "trailer", "keep-alive", "proxy-connection":
 		return true
+	}
+	return false
+}
+func reservedOutput(alias string) bool {
+	for _, name := range ownedHeaders {
+		if alias == headerAlias(name) {
+			return true
+		}
 	}
 	return false
 }

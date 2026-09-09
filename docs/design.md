@@ -36,8 +36,8 @@ For every ordinary request on which Realclient runs:
 3. Select the first source whose predicates all hold and whose client-IP extraction succeeds.
 4. If none succeeds, use the peer.
 5. Resolve scheme from the selected source's configured metadata, otherwise from peer transport.
-6. Remove competing identity/forwarding inputs, publish canonical headers and a valid
-   `RemoteAddr`, and call the next handler.
+6. Remove competing identity/forwarding inputs, publish canonical identity, forwarding, and
+   source-provenance headers and a valid `RemoteAddr`, and call the next handler.
 
 The useful invariant is **one effective identity**, including when that identity is only the peer.
 An accepted source says the configured provenance assumptions were satisfied; it does not prove
@@ -184,7 +184,8 @@ Top-level fields are `sources` (ordered list, default empty) and `feedCacheDir` 
 disabling persistence). Omitting sources selects peer-only normalization. An explicitly supplied empty source list is invalid.
 
 Source fields are `name`, `preset`, `trust`, `extract`, and optional `scheme`.
-Names are nonempty and unique within an instance. No automatic name or preset is inferred.
+Names are nonempty, unique within an instance, and valid HTTP header values because a successfully
+resolved configured name is emitted in `X-Realclient-Source`. No automatic name or preset is inferred.
 Every expanded source needs at least one effective trust predicate and a complete
 `extract: {header: ..., mode: single}` object. Both extraction fields are required.
 
@@ -440,6 +441,9 @@ Do not replace it with a clone and assume the outer logger follows that replacem
 ### 5.1 Identity outputs
 
 - Always set exactly one canonical `X-Real-Ip` to the effective IP; there is no disable switch.
+- If a configured source fully matches and client-IP extraction succeeds, set
+  `X-Realclient-Verified: true` and set `X-Realclient-Source` to that source's configured `name`,
+  never its preset name. Emit neither provenance header on peer fallback.
 - If a source successfully resolved the IP, set `RemoteAddr = net.JoinHostPort(client, "0")`.
 - On peer fallback, reconstruct `RemoteAddr` from the canonical peer and its original port.
   Ordinary direct requests stay equivalent; mapped/zoned spellings become consistent.
@@ -479,6 +483,11 @@ writing the stated values. Source scheme inputs are consumed and removed across 
 | `X-Forwarded-Tls-Client-Cert`, `X-Forwarded-Tls-Client-Cert-Info` | Remove inbound assertions; a downstream certificate middleware may repopulate from `req.TLS`. |
 | `Cf-Visitor` | Remove: it is a competing scheme channel, including for Badger. |
 
+`X-Realclient-Verified` and `X-Realclient-Source` are Realclient-owned provenance outputs. Always
+remove inbound copies and underscore aliases before writing canonical outputs, including on peer
+fallback and malformed-peer error paths. They report that configured source predicates matched and
+IP extraction succeeded; they are provenance signals, not authentication credentials.
+
 For IPv6 `req.Host`, use bracket-aware authority parsing; do not split on the first colon. If
 no valid explicit port is available, use the scheme default; never copy a malformed port header.
 An original nonstandard port or host hidden by a proxy override is outside v1's recovery contract.
@@ -501,6 +510,10 @@ Reject a configured extraction/scheme header colliding with `Host`, `Connection`
 `Transfer-Encoding`, `Content-Length`, `TE`, `Trailer`, `Keep-Alive`, `Proxy-Connection`,
 or an output of the other role; allow the intended identity input `X-Real-Ip` and scheme input
 `X-Forwarded-Proto`. Future secret-input precedence is specified in §9's v1.1 scope.
+
+Reject both Realclient-owned provenance output names anywhere an input header can influence source
+trust, identity extraction, or scheme resolution. This collision check is case-insensitive and treats
+underscores as dashes, matching runtime removal semantics.
 
 Operators must account for downstream mutation. Badger can repopulate XFF when its own trust
 branch is active. A headers/auth middleware can overwrite canonical headers. Realclient cannot

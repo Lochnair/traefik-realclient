@@ -41,6 +41,8 @@ func TestPeerAndIdentity(t *testing.T) {
 		t.Run(tc.input, func(t *testing.T) {
 			r := request(tc.input)
 			r.Header.Set("X-Real-Ip", "forged")
+			r.Header.Set("X-Realclient-Verified", "forged")
+			r.Header.Set("X-Realclient-Source", "forged")
 			w, called := apply(t, CreateConfig(), r)
 			if called != tc.valid {
 				t.Fatalf("called %v", called)
@@ -49,7 +51,8 @@ func TestPeerAndIdentity(t *testing.T) {
 				if r.RemoteAddr != tc.want {
 					t.Fatal(r.RemoteAddr)
 				}
-			} else if w.Code != 500 || strings.Contains(w.Body.String(), tc.input) || r.Header.Get("X-Real-Ip") != "" {
+			} else if w.Code != 500 || strings.Contains(w.Body.String(), tc.input) || r.Header.Get("X-Real-Ip") != "" ||
+				r.Header.Get("X-Realclient-Verified") != "" || r.Header.Get("X-Realclient-Source") != "" {
 				t.Fatal("bad integration error")
 			}
 		})
@@ -232,6 +235,9 @@ func TestBackendObservedForwarding(t *testing.T) {
 	if r.RemoteAddr != "192.0.2.50:0" || r.Header.Get("X-Real-Ip") != "192.0.2.50" {
 		t.Fatal("identity", r.RemoteAddr, r.Header.Get("X-Real-Ip"))
 	}
+	if r.Header.Get("X-Realclient-Verified") != "true" || r.Header.Get("X-Realclient-Source") != "source" {
+		t.Fatal("provenance", r.Header)
+	}
 	if r.Header.Get("X-Forwarded-Host") != "app.example.com:8443" || r.Header.Get("X-Forwarded-Port") != "8443" {
 		t.Fatal("authority", r.Header.Get("X-Forwarded-Host"), r.Header.Get("X-Forwarded-Port"))
 	}
@@ -248,12 +254,17 @@ func TestBackendObservedForwarding(t *testing.T) {
 
 	// Peer fallback: canonical peer tuple, scheme from transport, default port.
 	r = request("[::ffff:198.51.100.9]:6100")
+	r.Header.Set("X-Realclient-Verified", "forged")
+	r.Header.Set("X-Realclient-Source", "forged")
 	if _, called := apply(t, CreateConfig(), r); !called {
 		t.Fatal("not called")
 	}
 	if r.RemoteAddr != "198.51.100.9:6100" || r.Header.Get("X-Real-Ip") != "198.51.100.9" ||
 		r.Header.Get("X-Forwarded-Proto") != "http" || r.Header.Get("X-Forwarded-Port") != "80" {
 		t.Fatal("fallback tuple", r.RemoteAddr, r.Header)
+	}
+	if r.Header.Get("X-Realclient-Verified") != "" || r.Header.Get("X-Realclient-Source") != "" {
+		t.Fatal("fallback provenance", r.Header)
 	}
 
 	// Overlapping sources both match the peer; the first extracts a malformed
@@ -269,7 +280,8 @@ func TestBackendObservedForwarding(t *testing.T) {
 	r.Header.Set("X-BProto", "https")
 	apply(t, &Config{Sources: []SourceConfig{a, b}}, r)
 	if r.Header.Get("X-Real-Ip") != "192.0.2.77" || r.Header.Get("X-Forwarded-Proto") != "https" ||
-		r.Header.Get("X-B") != "" || r.Header.Get("X-Client") != "" {
+		r.Header.Get("X-B") != "" || r.Header.Get("X-Client") != "" ||
+		r.Header.Get("X-Realclient-Source") != "b" {
 		t.Fatal("overlap precedence", r.Header)
 	}
 
@@ -357,5 +369,65 @@ func TestConfigImmutabilityAndValidation(t *testing.T) {
 	after := CreateConfig()
 	if !reflect.DeepEqual(before, after) {
 		t.Fatal("defaults")
+	}
+}
+
+func TestOwnedOutputConfigurationCollisions(t *testing.T) {
+	for _, owned := range []string{"X-Realclient-Verified", "X-Realclient-Source"} {
+		for _, field := range []string{"extract", "scheme", "headerIn", "hostExact", "hostSuffixes"} {
+			t.Run(owned+"/"+field, func(t *testing.T) {
+				x := explicit()
+				header := owned
+				if owned == "X-Realclient-Verified" && field == "hostSuffixes" {
+					header = "x_REALCLIENT_verified"
+				}
+				switch field {
+				case "extract":
+					x.Extract.Header = text(header)
+				case "scheme":
+					x.Scheme.Header = text(header)
+				case "headerIn":
+					x.Trust.HeaderIn = &HeaderInConfig{Name: text(header), Values: list("value")}
+				case "hostExact":
+					x.Trust.HostExact = &HostExactConfig{Header: text(header), Values: list("example.com")}
+				case "hostSuffixes":
+					x.Trust.HostSuffixes = &HostSuffixesConfig{Header: text(header), Suffixes: list("example.com")}
+				}
+				if _, err := compileConfig(&Config{Sources: []SourceConfig{x}}); err == nil || !strings.Contains(err.Error(), "owned output header") {
+					t.Fatal("owned output accepted", err)
+				}
+			})
+		}
+	}
+}
+
+func TestSourceNameHeaderValueValidation(t *testing.T) {
+	for _, name := range []string{"bunny", "cloudflare-edge", "internal proxy 1", "edge\tprimary"} {
+		t.Run("valid/"+name, func(t *testing.T) {
+			x := explicit()
+			x.Name = text(name)
+			if _, err := compileConfig(&Config{Sources: []SourceConfig{x}}); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+	for _, tc := range []struct{ name, value string }{{"cr", "edge\rname"}, {"lf", "edge\nname"}, {"nul", "edge\x00name"}, {"control", "edge\x1fname"}, {"del", "edge\x7fname"}} {
+		t.Run("invalid/"+tc.name, func(t *testing.T) {
+			x := explicit()
+			x.Name = text(tc.value)
+			if _, err := compileConfig(&Config{Sources: []SourceConfig{x}}); err == nil {
+				t.Fatal("unsafe source name accepted")
+			}
+		})
+	}
+}
+
+func TestPresetUsesConfiguredSourceName(t *testing.T) {
+	x := SourceConfig{Name: text("configured-edge"), Preset: text("cloudflare"), Trust: &TrustConfig{Static: list("203.0.113.0/24")}}
+	r := request("203.0.113.1:443")
+	r.Header.Set("Cf-Connecting-Ip", "192.0.2.9")
+	apply(t, &Config{Sources: []SourceConfig{x}}, r)
+	if r.Header.Get("X-Real-Ip") != "192.0.2.9" || r.Header.Get("X-Realclient-Verified") != "true" || r.Header.Get("X-Realclient-Source") != "configured-edge" {
+		t.Fatal(r.Header)
 	}
 }
